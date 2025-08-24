@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torchvision import transforms, datasets
 from torch.utils.data import DataLoader, IterableDataset, Dataset, Subset
 from tqdm import tqdm
-import torch_fidelity
 from pathlib import Path
 import torchvision.transforms.functional as TF
 from torchvision.utils import make_grid
