@@ -1,3 +1,9 @@
+"""
+Model creation utilities for diffusion continual learning.
+
+Provides functions for creating diffusion models with different architectures and sizes.
+"""
+
 
 # diffusion_models.py
 """
@@ -271,3 +277,89 @@ def build_conditional_ddim(
         num_class_labels=num_class_labels,
         **kwargs,
     )
+
+
+def create_diffusion_model(
+    dataset_type: str, 
+    model_size: str = "normal", 
+    device: torch.device = None
+):
+    """
+    Create a diffusion model for the specified dataset and size.
+    
+    Args:
+        dataset_type (str): Either "mnist" or "cifar" 
+        model_size (str): Either "normal" or "small"
+        device (torch.device): Device to place the model on
+        
+    Returns:
+        torch.nn.Module: The created diffusion model
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Determine input channels and class labels based on dataset
+    if dataset_type.lower() == "mnist":
+        in_channels = 1
+        num_class_labels = 4
+    elif dataset_type.lower() == "cifar":
+        in_channels = 3
+        num_class_labels = 2
+    else:
+        raise ValueError(f"Unsupported dataset_type: {dataset_type}. Use 'mnist' or 'cifar'.")
+    
+    # Create model based on size
+    if model_size.lower() == "normal":
+        model = build_conditional_ddim(
+            in_channel=in_channels,
+            image_size=32,
+            num_class_labels=num_class_labels,
+        ).to(device)
+        
+    elif model_size.lower() == "small":
+        model = build_conditional_ddim(
+            in_channel=in_channels,
+            image_size=32,
+            block_out_channels=(16, 16),
+            down_block_types=("DownBlock2D", "DownBlock2D"),
+            up_block_types=("UpBlock2D", "UpBlock2D"),
+            norm_num_groups=8,
+            layers_per_block=1,
+            num_class_labels=num_class_labels,
+        ).to(device)
+        
+    else:
+        raise ValueError(f"Unsupported model_size: {model_size}. Use 'normal' or 'small'.")
+    
+    return model
+
+
+def create_models_with_optimizers(device, model_size="normal", learning_rate=2e-4):
+    """
+    Create MNIST and CIFAR models with their optimizers.
+    
+    Args:
+        device: PyTorch device for model placement
+        model_size (str): Either "normal" or "small" 
+        learning_rate (float): Learning rate for Adam optimizer
+        
+    Returns:
+        tuple: (mnist_model, cifar_model, mnist_optimizer, cifar_optimizer)
+    """
+    # Create models
+    mnist_model = create_diffusion_model("mnist", model_size, device)
+    cifar_model = create_diffusion_model("cifar", model_size, device)
+    
+    # Print parameter counts
+    mnist_params = sum(p.numel() for p in mnist_model.parameters() if p.requires_grad)
+    cifar_params = sum(p.numel() for p in cifar_model.parameters() if p.requires_grad)
+    
+    print(f"MNIST model ({model_size}) parameters: {mnist_params:,}")
+    print(f"CIFAR model ({model_size}) parameters: {cifar_params:,}")
+    
+    # Create optimizers
+    from torch import optim
+    mnist_opt = optim.Adam(mnist_model.parameters(), lr=learning_rate)
+    cifar_opt = optim.Adam(cifar_model.parameters(), lr=learning_rate)
+    
+    return mnist_model, cifar_model, mnist_opt, cifar_opt
