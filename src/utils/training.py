@@ -53,6 +53,42 @@ def train_one_task(model, train_loader, task_id, optimizer,
             _save_epoch_samples(model, task_id, epoch, save_path, device)
 
 
+def train_continual_learning(model, cl_train_loaders, optimizer, 
+                             ewc=None,
+                             num_epochs=10, save_path=None, device='cuda'):
+    """
+    Train the model on a sequence of tasks for continual learning.
+    
+    Args:
+        model: Diffusion model
+        cl_train_loaders: Dict mapping task_id -> DataLoader
+        optimizer: PyTorch optimizer  
+        ewc: EWC regularization object (optional)
+        num_epochs (int): Number of epochs per task
+        save_path (str): Path to save sample images
+        device (str): Device to train on
+    """
+    for task_id in sorted(cl_train_loaders.keys()):
+        print(f"\\n--- Training Task {task_id} ---")
+        loader = cl_train_loaders[task_id]
+
+        # Train current task with EWC penalty (if ewc is not None)
+        train_one_task(
+            model=model,
+            train_loader=loader,
+            task_id=task_id,
+            optimizer=optimizer,
+            num_epochs=num_epochs,
+            save_path=save_path,
+            device=device,
+            ewc=ewc,
+        )
+
+        # Consolidate Fisher information on current task for EWC
+        if ewc is not None:
+            print(f"[EWC] Consolidating Fisher on task {task_id}...")
+            ewc.consolidate(loader)
+
 
 def _save_epoch_samples(model, task_id, epoch, save_path, device):
     """
