@@ -13,6 +13,10 @@ import random
 # import torch
 # from torchvision import transforms
 from torchmetrics.image.fid import FrechetInceptionDistance
+from copy import deepcopy
+import os
+import json
+import argparse
 
 def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False):
     if name.lower() == 'mnist':
@@ -109,29 +113,86 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False)
     test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=0, pin_memory=True)
     return train_loaders, test_loaders, train_loader, test_loader
 
+def load_config_from_json(config_path):
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    try:
+        with open(config_path, 'r') as f:
+            config_dict = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Error decoding JSON from {config_path}: {e}")
+
+    config_args = argparse.Namespace(**config_dict)
+
+    # if hasattr(config_args, 'dec_hidden_dim') and isinstance(config_args.dec_hidden_dim, list):
+        # config_args.dec_hidden_dim = tuple(config_args.dec_hidden_dim)
+
+    return config_args
 
 def train_one_task(model, train_loader, class_id, optimizer, 
                    ewc=None,
-                   num_epochs=10, save_path=None, device='cuda'):
+                   gr=None,
+                   kl=False,
+                   num_epochs=10, save_path=None, device='cuda', wandb=None):
     
     for epoch in tqdm(range(num_epochs)):
-        for batch in train_loader:
+        for batch in tqdm(train_loader):
             images, labels = batch
             images = images.to(device)
             labels = labels.to(device)
 
-            optimizer.zero_grad()
+            if gr is not None:
+                # combine with generated old data
+                x_old, y_old = gr.replay()
+                # randomly select half of the batch size from real data
+                x_new = images[:images.size(0)//2]
+                y_new = labels[:images.size(0)//2]
+                images = torch.cat([x_new, x_old], dim=0)
+                labels = torch.cat([y_new, y_old], dim=0)
+                # should have the same batch size
+                assert images.size(0) == x_new.size(0) + x_old.size(0)
+                # shuffle the combined batch
+                perm = torch.randperm(images.size(0))
+                images = images[perm]
+                labels = labels[perm]
 
-            loss = model.diffusion_loss(images, labels)
+            optimizer.zero_grad()
+            loss = 0
+            ddim_loss = model.diffusion_loss(images, labels)
+            loss = loss + ddim_loss
             if ewc is not None:
-                loss_ewc = ewc.loss()#.penalty() if ewc is not None else torch.zeros((), device=device)
-                loss = loss + 10000*loss_ewc
+                loss_ewc = ewc.loss(model)#.penalty() if ewc is not None else torch.zeros((), device=device)
+                loss = loss + model.ewc_lambda * loss_ewc
+
+            if kl and gr is not None:
+                # compute the generative replay distillation loss
+                b_old = x_old.size(0)
+                t_kl = torch.randint(0, model.scheduler.num_train_timesteps, (b_old,), device=device).long()
+                eps = torch.randn_like(x_old, device=device)
+                x_noisy = model.scheduler.add_noise(x_old, eps, t_kl)
+
+                with torch.no_grad():
+                    eps_teacher = gr.teacher.unet(x_noisy, t_kl, y_old).sample
+                eps_student = model.unet(x_noisy, t_kl, y_old).sample
+                loss_kl = F.mse_loss(eps_student, eps_teacher)
+                loss = loss + model.gr_kl * loss_kl
 
             loss.backward()
             optimizer.step()
 
+        if wandb is not None:
+            wandb.log({
+                'loss/ddim': ddim_loss.item(),
+                'loss/ewc': loss_ewc.item() if ewc is not None else 0.0,
+                'loss/kl': loss_kl.item() if (kl and gr is not None) else 0.0,
+                'loss/total': loss.item(),
+                'epoch': epoch + num_epochs * class_id,
+            })
+
+
         # visualize every 50 epochs
-        if save_path is not None and epoch % 2 == 0:
+        if save_path is not None and epoch % 20 == 0:
             # sample 8 images for each label from 0 to 9
             out_dir = Path(save_path) / f"task_{class_id}" / f"epoch_{epoch:05d}"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -152,9 +213,20 @@ def train_one_task(model, train_loader, class_id, optimizer,
                     all_tensors.append((im + 1.0) * 0.5)  # [0,1] float
 
             grid = make_grid(torch.stack(all_tensors, dim=0), nrow=cols, padding=2)  # 8 per row
-            grid_pil = TF.to_pil_image(grid.clamp(0, 1))
+            grid_pil = TF.to_pil_image(grid.clamp(0, 1)) # is grid_pil a PIL image? Yes, it is.
+            if wandb is not None:
+                wandb.log({f"samples/task{class_id}": wandb.Image(grid_pil, caption=f"Task {class_id} Epoch {epoch}")})
             out_file = out_dir / f"epoch_{epoch:05d}_grid.png"
             grid_pil.save(out_file)
+
+    # return {
+    #     "ddim_loss": ddim_loss.item(),
+    #     "ewc_loss": loss_ewc.item() if ewc is not None else 0.0,
+    #     "kl_loss": loss_kl.item() if (kl is not None and gr is not None) else 0.0,
+    #     "loss": loss.item(),
+    #     # return images
+    #     "images": grid_pil if save_path is not None else None,
+    # } 
 
 def train_continual_learning(model, cl_train_loaders, optimizer, 
                              ewc=None,
@@ -267,6 +339,16 @@ class FIDEvaluator:
             seen += imgs_real.size(0)
 
         return float(self.fid.compute().cpu().item())
+    
+
+@torch.no_grad() # return a frozen teacher model
+def freeze_model(model):
+    teacher = deepcopy(model)
+    for param in teacher.parameters():
+        param.requires_grad = False
+    teacher.eval()
+    return teacher
+    
     
 
 #-----------------------------------------------------------------------------#
@@ -427,3 +509,4 @@ def compare_fisher_errors_streaming(
             "diag":     {"abs": err_diag,     "rel": err_diag / (frobF + 1e-12)},
         },
     }
+

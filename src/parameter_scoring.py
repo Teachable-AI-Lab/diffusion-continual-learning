@@ -14,7 +14,7 @@ def _maybe_to(x, device):
 
 def compute_param_scores(
     model,
-    t_level: int,
+    # t_level: int,
     loaders_by_class,          # e.g., your cl_mnist_train_loaders dict
     device: torch.device = torch.device("cuda"),
     target_class: int = 0,     # match your `if class_id != 0: continue`
@@ -55,7 +55,7 @@ def compute_param_scores(
     # Ensure autograd is enabled (we need grads!)
     # torch.set_grad_enabled(True)
 
-    for images, labels in tqdm(loader, desc=f"param_scores@t={t_level}"):
+    for images, labels in tqdm(loader, desc=f"param_scores"):
         images = _maybe_to(images, device)
         labels = _maybe_to(labels, device)
 
@@ -112,10 +112,10 @@ def compute_param_scores(
 
 def compute_rank1_coeff_and_mean(
     model,
-    t_level: int,
-    loaders_by_class,                 # dict[int, DataLoader] yielding (images, labels)
+    # t_level: int,
+    loader,                 # dict[int, DataLoader] yielding (images, labels)
     device: torch.device = torch.device("cuda"),
-    target_class: int = 0,
+    # target_class: int = 0,
     max_samples: int | None = None,
     eps: float = 1e-12,
     dtype: torch.dtype = torch.float64,  # use float64 for stable inner products
@@ -137,9 +137,10 @@ def compute_rank1_coeff_and_mean(
     unet = model.unet
     scheduler = model.scheduler
 
-    if target_class not in loaders_by_class:
-        raise KeyError(f"class_id {target_class} not found in loaders_by_class")
-    loader = loaders_by_class[target_class]
+    # if target_class not in loaders_by_class:
+        # raise KeyError(f"class_id {target_class} not found in loaders_by_class")
+    # loader = loaders_by_class[target_class]
+    # loader = loaders_by_class
 
     torch.set_grad_enabled(True)
 
@@ -148,7 +149,7 @@ def compute_rank1_coeff_and_mean(
     diag_sum = None
     N = 0
 
-    pbar = tqdm(loader, desc=f"[pass1] mu @ t={t_level}")
+    pbar = tqdm(loader, desc=f"[pass1] mu")
     for images, labels in pbar:
         images = _maybe_to(images, device)
         labels = _maybe_to(labels, device)
@@ -209,7 +210,7 @@ def compute_rank1_coeff_and_mean(
     sum_proj2 = torch.zeros((), device=device, dtype=dtype)
     M = 0
 
-    pbar = tqdm(loader, desc=f"[pass2] c* @ t={t_level}")
+    pbar = tqdm(loader, desc=f"[pass2] c*")
     for images, labels in pbar:
         images = _maybe_to(images, device)
         labels = _maybe_to(labels, device)

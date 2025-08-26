@@ -39,11 +39,13 @@ def setup_experiment(seed=123, device=None):
     # Create output directory
     ROOT = Path("./ddim_unit_tests")
     ROOT.mkdir(exist_ok=True, parents=True)
+
+    print("Experiment root directory:", ROOT)
     
     return device, ROOT
 
 
-def load_datasets(batch_size=128):
+def load_datasets(batch_size=128): # we should type dataset name as one of the inputs
     """Load continual learning datasets."""
     cl_cifar_train_loaders, cl_cifar_test_loaders, cifar_train_loader, cifar_test_loader = utils.get_cl_dataset(
         'cifar10', batch_size=batch_size, normalize=True, greyscale=False
@@ -108,15 +110,15 @@ def compute_fisher_information(model, loaders, device):
     )
     
     # Method 2: Batch computation for comparison
-    param_scores = compute_param_scores(
-        model, 0, loaders, device=device, target_class=0, max_samples=None
-    )
-    c_batch, mu_batch = optimal_rank1_coeff(param_scores, eps=1e-12, use_float64=False)
+    # param_scores = compute_param_scores(
+    #     model, 0, loaders, device=device, target_class=0, max_samples=None
+    # )
+    # c_batch, mu_batch = optimal_rank1_coeff(param_scores, eps=1e-12, use_float64=False)
     
     print(f"Streaming optimal coefficient c*: {c.item()}")
-    print(f"Batch optimal coefficient c*: {c_batch.item()}")
+    # print(f"Batch optimal coefficient c*: {c_batch.item()}")
     
-    return c, mu, diag, param_scores
+    return c, mu, diag#, param_scores
 
 
 def train_continual_learning_tasks(model, loaders, optimizer, ewc_type, c, mu, diag, n_epochs, ROOT, device, model_suffix):

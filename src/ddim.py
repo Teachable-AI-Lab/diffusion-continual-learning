@@ -114,6 +114,8 @@ class ConditionalDDIM(nn.Module):
         norm_num_groups: int = 32,
         # ignored, for BC with earlier version
         cfg_uncond_prob: float = 0.0,
+        ewc_lambda: float = 0.0,
+        gr_kl: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -130,6 +132,8 @@ class ConditionalDDIM(nn.Module):
         self.in_channels = int(in_channels)
         self.out_channels = int(in_channels)
         self.num_class_labels = int(num_class_labels)
+        self.ewc_lambda = float(ewc_lambda)
+        self.gr_kl = float(gr_kl)
 
         self.unet = UNet2DModel(
             sample_size=self.image_size,

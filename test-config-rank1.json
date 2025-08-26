@@ -1,0 +1,31 @@
+{
+    "use_wandb": true,
+    "wandb_project": "diffusion-continual-learning",
+    "wandb_run_name": "mnist-rank1-gr",
+  
+    "output_dir": "/nethome/zwang910/file_storage/iclr-2026",
+    "seed": 123,
+  
+    "dataset": "mnist",
+    "batch_size": 128,
+    "normalize": true,
+    "greyscale": false,
+  
+    "num_classes": 10,
+  
+    "ewc_lambda": 10000.0,
+    "ewc_fisher_type": "rank1",
+  
+    "use_generative_replay": true,
+    "gr_alpha": 0.5,
+    "gr_pool_size_per_class": 5000,
+    "gr_num_inference_steps": 50,
+    "gr_eta": 0.0,
+  
+    "use_distillation": false,
+    "gr_kl": 1.0,
+  
+    "lr": 2e-4,
+    "epochs": 200
+  }
+  
