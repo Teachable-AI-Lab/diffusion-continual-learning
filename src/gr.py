@@ -112,8 +112,11 @@ class GenerativeReplay:
     def replay(self):
         # randomly sample from the pre-generated pool
         n_replay_samples = self.n_old()
-        x_old = self.pool[self.pool_ptr:self.pool_ptr + n_replay_samples]
-        y_old = self.pool_labels[self.pool_ptr:self.pool_ptr + n_replay_samples]
+        idx = self.pool_indices[self.pool_ptr:self.pool_ptr + n_replay_samples]
+        # x_old = self.pool[self.pool_ptr:self.pool_ptr + n_replay_samples]
+        x_old = self.pool[idx]
+        # y_old = self.pool_labels[self.pool_ptr:self.pool_ptr + n_replay_samples]
+        y_old = self.pool_labels[idx]
         self.pool_ptr += n_replay_samples
         if self.pool_ptr + n_replay_samples > self.pool_size:
             self.pool_indices = torch.randperm(self.pool_size, device=self.device)   
