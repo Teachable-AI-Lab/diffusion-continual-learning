@@ -146,12 +146,13 @@ def train_one_task(model, train_loader, class_id, optimizer,
                 # combine with generated old data
                 x_old, y_old = gr.replay()
                 # randomly select half of the batch size from real data
-                x_new = images[:images.size(0)//2]
-                y_new = labels[:images.size(0)//2]
-                images = torch.cat([x_new, x_old], dim=0)
-                labels = torch.cat([y_new, y_old], dim=0)
-                # should have the same batch size
-                assert images.size(0) == x_new.size(0) + x_old.size(0)
+                # x_new = images[:images.size(0)//2]
+                # y_new = labels[:images.size(0)//2]
+                images = torch.cat([images, x_old], dim=0)
+                labels = torch.cat([labels, y_old], dim=0)
+                # should have the same batch size = 256 + 64 = 320
+                # assert images.size(0) == 320 # TODO: For now
+
                 # shuffle the combined batch
                 perm = torch.randperm(images.size(0))
                 images = images[perm]

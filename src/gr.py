@@ -106,7 +106,7 @@ class GenerativeReplay:
 
     def n_old(self) -> int:
         """Number of replay samples given (batch_size, alpha)."""
-        return int(round((1.0 - self.alpha) * self.batch_size))
+        return int(self.alpha * self.batch_size)
 
     @torch.no_grad()
     def replay(self):

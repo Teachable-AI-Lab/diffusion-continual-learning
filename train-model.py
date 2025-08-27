@@ -158,27 +158,28 @@ for task_id in all_task_ids:
         break
 
     # adding continual learning components
-    if ewc is None:
-        # create a new EWC object
-        fisher_type = args.ewc_fisher_type
-        c, mu, diag = compute_rank1_coeff_and_mean(
-            model, train_loader, device=device, max_samples=None#500
-        )
-        # save the fisher information too
-        torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
+    if args.use_ewc:
+        if ewc is None:
+            # create a new EWC object
+            fisher_type = args.ewc_fisher_type
+            c, mu, diag = compute_rank1_coeff_and_mean(
+                model, train_loader, device=device, max_samples=None#500
+            )
+            # save the fisher information too
+            torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
 
-        frozen_model = utils.freeze_model(model)
-        ewc = EWC(frozen_model, fisher_type, c=c, mu=mu, diag=diag)
-    else:
-        # add a new task to the existing EWC object
-        c, mu, diag = compute_rank1_coeff_and_mean(
-            model, train_loader, device=device, max_samples=None#500
-        )
-        # save the fisher information too
-        torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
+            frozen_model = utils.freeze_model(model)
+            ewc = EWC(frozen_model, fisher_type, c=c, mu=mu, diag=diag)
+        else:
+            # add a new task to the existing EWC object
+            c, mu, diag = compute_rank1_coeff_and_mean(
+                model, train_loader, device=device, max_samples=None#500
+            )
+            # save the fisher information too
+            torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
 
-        frozen_model = utils.freeze_model(model)
-        ewc.add_task(frozen_model, c=c, mu=mu, diag=diag)
+            frozen_model = utils.freeze_model(model)
+            ewc.add_task(frozen_model, c=c, mu=mu, diag=diag)
 
     if args.use_generative_replay:
         if gr is None:

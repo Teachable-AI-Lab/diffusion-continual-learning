@@ -143,9 +143,11 @@ class ConditionalDDIM(nn.Module):
             down_block_types=tuple(down_block_types),
             up_block_types=tuple(up_block_types),
             layers_per_block=layers_per_block,
-            # class_embed_type="timestep",
+            downsample_type='resnet',
+            upsample_type='resnet',
             num_class_embeds=self.num_class_labels,  # no reserved id
             norm_num_groups=norm_num_groups,
+            dropout=0.1,
         )
 
         self.scheduler = DDIMScheduler(
