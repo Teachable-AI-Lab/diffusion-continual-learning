@@ -7,7 +7,7 @@
     "seed": 123,
   
     "dataset": "cifar10",
-    "batch_size": 256,
+    "batch_size": 128,
     "normalize": true,
     "greyscale": false,
   
@@ -18,7 +18,7 @@
     "ewc_fisher_type": "rank1_opt",
   
     "use_generative_replay": true,
-    "gr_alpha": 0.5,
+    "gr_alpha": 1.0,
     "gr_pool_size_per_class": 5000,
     "gr_num_inference_steps": 50,
     "gr_eta": 0.0,

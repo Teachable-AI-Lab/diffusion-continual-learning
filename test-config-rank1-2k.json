@@ -1,7 +1,7 @@
 {
     "use_wandb": true,
     "wandb_project": "diffusion-continual-learning",
-    "wandb_run_name": "cifar10-rank1-gr",
+    "wandb_run_name": "cifar10-rank1-2k-gr",
   
     "output_dir": "/nethome/zwang910/file_storage/iclr-2026",
     "seed": 123,
@@ -14,7 +14,7 @@
     "num_classes": 10,
   
     "use_ewc": true,
-    "ewc_lambda": 10000.0,
+    "ewc_lambda": 2000.0,
     "ewc_fisher_type": "rank1",
   
     "use_generative_replay": true,

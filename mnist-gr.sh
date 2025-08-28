@@ -12,5 +12,5 @@ conda init
 conda activate dl
 cd /nethome/zwang910/research/continual-learning
 
-python train-model.py --config=test-config-rank1.json
-# python train-model.py --config=test-config-rank1-2k.json
+python train-model.py --config=test-config-gr.json
+# python train-model.py --config=test-config-gr-dist.json
