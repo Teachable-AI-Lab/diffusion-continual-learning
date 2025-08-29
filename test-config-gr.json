@@ -3,7 +3,7 @@
     "wandb_project": "diffusion-continual-learning",
     "wandb_run_name": "cifar10-gr",
   
-    "output_dir": "/nethome/zwang910/file_storage/iclr-2026",
+    "output_dir": "/storage/home/hcoda1/1/zwang910/scratch/iclr-2026",
     "seed": 123,
   
     "dataset": "cifar10",

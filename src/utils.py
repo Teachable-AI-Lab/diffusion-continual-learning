@@ -18,7 +18,7 @@ import os
 import json
 import argparse
 
-def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False):
+def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False, group_size=2, n_classes=10):
     if name.lower() == 'mnist':
         transform = transforms.Compose([transforms.ToTensor()])
         if normalize:
@@ -54,13 +54,50 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False)
             ])
         train_dataset = datasets.CIFAR10(root='archive/data', train=True, download=True, transform=transform)
         test_dataset = datasets.CIFAR10(root='archive/data', train=False, download=True, transform=transform)
+    elif name.lower() == 'imagenet64':
+        from datasets import load_dataset  # HF datasets (doesn't shadow torchvision.datasets)
+        hf_repo = "benjamin-paine/imagenet-1k-64x64"   # alt: "sradc/imagenet_resized_64x64"
+        train_hf = load_dataset(hf_repo, split="train",
+                                     cache_dir='/storage/coda1/p-cmaclellan3/0/shared/imagenet')
+        test_hf = load_dataset(hf_repo, split="validation",
+                                    cache_dir='/storage/coda1/p-cmaclellan3/0/shared/imagenet')
+        if normalize:
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
+        # Wrap HF dataset so we yield (tensor, label) pairs
+        import types
+        class HFImageNet64(torch.utils.data.Dataset):
+            def __init__(self, hf_ds, transform):
+                self.ds = hf_ds
+                self.transform = transform
+                # Try to infer #classes from features; default to 1000
+                self.num_classes = 1000#getattr(getattr(hf_ds, "features", {}), "get", lambda *_: None)("label")
+                # if self.num_classes and hasattr(self.num_classes, "num_classes"):
+                #     self.num_classes = int(self.num_classes.num_classes)
+                # else:
+                #     self.num_classes = 1000
+
+            def __len__(self):
+                return len(self.ds)
+
+            def __getitem__(self, idx):
+                rec = self.ds[idx]
+                img = rec["image"]   # PIL.Image (decoded lazily)
+                y   = int(rec["label"])
+                x   = self.transform(img)
+                return x, y
+        train_dataset = HFImageNet64(train_hf, transform)
+        test_dataset  = HFImageNet64(test_hf,  transform)
+        
     else:
         train_dataset = None
         test_dataset = None
 
      # how many classes per group?
-    group_size = 2
-    n_classes  = 10
+    # group_size = 2
+    # n_classes  = 10
     n_groups   = n_classes // group_size  # == 5
 
     # return a dictionary: class_id: dataloader

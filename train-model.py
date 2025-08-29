@@ -76,8 +76,10 @@ set_seed(args.seed)
 
 # load datasets
 print("Loading datasets...")
+group_size = 50 if args.dataset == 'imagenet64' else 2
 cl_train_loader, cl_test_loader, full_train_loader, full_test_loader = utils.get_cl_dataset(
-        args.dataset, batch_size=args.batch_size, normalize=args.normalize, greyscale=args.greyscale
+        args.dataset, batch_size=args.batch_size, normalize=args.normalize, greyscale=args.greyscale,
+        group_size=group_size, n_classes=args.num_classes
     )
 im_size = full_train_loader.dataset[0][0].shape[1]
 channels = full_train_loader.dataset[0][0].shape[0]

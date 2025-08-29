@@ -1,9 +1,9 @@
 {
     "use_wandb": true,
     "wandb_project": "diffusion-continual-learning",
-    "wandb_run_name": "cifar10-rank1-gr",
+    "wandb_run_name": "cifar10-rank1-gr-distill",
   
-    "output_dir": "/nethome/zwang910/file_storage/iclr-2026",
+    "output_dir": "/storage/home/hcoda1/1/zwang910/scratch/iclr-2026",
     "seed": 123,
   
     "dataset": "cifar10",
@@ -23,7 +23,7 @@
     "gr_num_inference_steps": 50,
     "gr_eta": 0.0,
   
-    "use_distillation": false,
+    "use_distillation": true,
     "gr_kl": 1.0,
   
     "lr": 2e-4,

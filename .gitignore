@@ -1,4 +1,6 @@
 *.pth
 *.pth
 *.out
+*.json
+*.sh
 /archive/data/

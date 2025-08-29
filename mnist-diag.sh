@@ -1,16 +1,16 @@
 #!/bin/bash
-#SBATCH --partition=tail-lab
-#SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
-#SBATCH --gpus-per-node=a40
-#SBATCH --mem-per-gpu="16GB"
-#SBATCH --qos="short"
-#SBATCH --exclude="spot,heistotron,xaea-12"
+#SBATCH --account=gts-cmaclellan3
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gpus=L40s:1
+#SBATCH --mem-per-cpu=16G
+#SBATCH -qinferno
+#SBATCH -t12:00:00
 
-source ~/.bashrc
-conda init
-conda activate dl
-cd /nethome/zwang910/research/continual-learning
+module load python cuda
+source ~/p-cmaclellan3-0/iclr-env/bin/activate
+cd ~/p-cmaclellan3-0/diffusion-continual-learning
 
-python train-model.py --config=test-config-diag.json
-# python train-model.py --config=test-config-diag-2k.json
+# python train-model.py --config=test-config-diag-only.json
+python train-model.py --config=test-config-diag-2k.json
+# python train-model.py --config=test-config-diag.json
