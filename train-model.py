@@ -29,6 +29,7 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.cuda.manual_seed(seed)
 
+
 #######################################################
 parser = argparse.ArgumentParser(
     description="Continual Learning with Diffusion."
@@ -76,10 +77,15 @@ set_seed(args.seed)
 
 # load datasets
 print("Loading datasets...")
-group_size = 50 if args.dataset == 'imagenet64' else 2
+# group_size = 2
+# if args.dataset == "cifar100":
+#     group_size = 5
+# if args.dataset == "imagenet64":
+#     group_size = 50
+print(f"Using group size of {args.group_size} for dataset {args.dataset}.")
 cl_train_loader, cl_test_loader, full_train_loader, full_test_loader = utils.get_cl_dataset(
         args.dataset, batch_size=args.batch_size, normalize=args.normalize, greyscale=args.greyscale,
-        group_size=group_size, n_classes=args.num_classes
+        group_size=args.group_size, n_classes=args.num_classes
     )
 im_size = full_train_loader.dataset[0][0].shape[1]
 channels = full_train_loader.dataset[0][0].shape[0]
@@ -126,6 +132,7 @@ for task_id in all_task_ids:
                      kl,
                      args.epochs,
                      ROOT / exp_path,
+                    #  None,
                      device, wandb)
     # save model after each task
     model_path = ROOT / exp_path / f"model-task{task_id}.pt"
@@ -186,7 +193,7 @@ for task_id in all_task_ids:
     if args.use_generative_replay:
         if gr is None:
             frozen_model = utils.freeze_model(model)
-            gr = GenerativeReplay(frozen_model, old_classes=list(range((task_id + 1)*2)), 
+            gr = GenerativeReplay(frozen_model, old_classes=list(range((task_id + 1) * args.group_size)),
                                  alpha=args.gr_alpha, 
                                  batch_size=args.batch_size, 
                                  pool_size_per_class=args.gr_pool_size_per_class,

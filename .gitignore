@@ -4,3 +4,4 @@
 *.json
 *.sh
 /archive/data/
+/scripts/

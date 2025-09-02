@@ -54,6 +54,136 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
             ])
         train_dataset = datasets.CIFAR10(root='archive/data', train=True, download=True, transform=transform)
         test_dataset = datasets.CIFAR10(root='archive/data', train=False, download=True, transform=transform)
+    elif name.lower() == 'stanfordcars':
+        # print("StanfordCars local files not found; using HF mirror:", e)
+        from datasets import load_dataset
+
+        # HF mirror with train/test + 196-class label
+        hf = load_dataset("Donghyun99/Stanford-Cars", cache_dir='/storage/coda1/p-cmaclellan3/0/shared/stanfordcars')
+        if greyscale:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+            ])
+            if normalize:
+                transform.transforms.append(transforms.Normalize((0.5,), (0.5,)))
+        else:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.Lambda(lambda im: im.convert('RGB')),
+                transforms.ToTensor(),
+            ])
+            if normalize:
+                transform.transforms.append(
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                )
+
+        class HFStanfordCars(torch.utils.data.Dataset):
+            def __init__(self, hf_ds, transform):
+                self.ds = hf_ds
+                self.transform = transform
+                try:
+                    self.num_classes = int(self.ds.features["label"].num_classes)
+                except Exception:
+                    self.num_classes = 196
+            def __len__(self): return len(self.ds)
+            def __getitem__(self, idx):
+                rec = self.ds[idx]
+                img = rec["image"]          # PIL.Image
+                y = int(rec["label"])       # 0..195
+                x = self.transform(img)
+                return x, y
+
+        train_dataset = HFStanfordCars(hf["train"], transform)
+        test_dataset  = HFStanfordCars(hf["test"],  transform)
+        # n_classes = getattr(train_dataset, "num_classes", 196)
+    elif name.lower() == 'flower102':
+        transform = transforms.Compose([transforms.ToTensor()])
+        if normalize:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
+        if greyscale:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,))
+            ])
+        train_dataset = datasets.Flowers102(root='archive/data', split='train', download=True, transform=transform)
+        test_dataset = datasets.Flowers102(root='archive/data', split='test', download=True, transform=transform)
+    elif name.lower() == 'cifar100':
+        transform = transforms.Compose([transforms.ToTensor()])
+        if normalize:
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
+        if greyscale:
+            transform = transforms.Compose([
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,))
+            ])
+        train_dataset = datasets.CIFAR100(root='archive/data', train=True, download=True, transform=transform)
+        test_dataset = datasets.CIFAR100(root='archive/data', train=False, download=True, transform=transform)
+    elif name.lower() == 'cub200':
+        # Hugging Face CUB-200-2011 (200 fine-grained bird classes)
+        from datasets import load_dataset
+        hf_repo = "bentrevett/caltech-ucsd-birds-200-2011"
+        # Tip: set cache_dir if you want to share downloads across jobs
+        cache_dir = '/storage/coda1/p-cmaclellan3/0/shared/cub'  # optional
+        # train_hf = load_dataset(hf_repo, split="train", cache_dir=cache_dir)
+        # test_hf  = load_dataset(hf_repo, split="test",  cache_dir=cache_dir)
+        train_hf = load_dataset(hf_repo, split="train",
+                                        cache_dir=cache_dir)
+        test_hf  = load_dataset(hf_repo, split="test",
+                                        cache_dir=cache_dir)
+
+        # Transforms: resize → tensor → normalize (match your other RGB datasets)
+        if normalize:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.Lambda(lambda im: im.convert('RGB')),  # <-- enforce 3C
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            ])
+        else:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.ToTensor(),
+            ])
+        if greyscale:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5,), (0.5,)) if normalize else transforms.Lambda(lambda x: x)
+            ])
+
+        class HFCUBDataset(torch.utils.data.Dataset):
+            """Wrap HF dataset to yield (tensor, label) like torchvision datasets."""
+            def __init__(self, hf_ds, transform):
+                self.ds = hf_ds
+                self.transform = transform
+                # Try to read #classes from HF features (falls back to 200)
+                self.num_classes = 200
+
+            def __len__(self):
+                return len(self.ds)
+
+            def __getitem__(self, idx):
+                rec = self.ds[idx]
+                img = rec["image"]               # PIL.Image
+                y = int(rec["label"])            # 0..199
+                x = self.transform(img)
+                return x, y
+
+        train_dataset = HFCUBDataset(train_hf, transform)
+        test_dataset  = HFCUBDataset(test_hf,  transform)
     elif name.lower() == 'imagenet64':
         from datasets import load_dataset  # HF datasets (doesn't shadow torchvision.datasets)
         hf_repo = "benjamin-paine/imagenet-1k-64x64"   # alt: "sradc/imagenet_resized_64x64"
@@ -61,35 +191,68 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
                                      cache_dir='/storage/coda1/p-cmaclellan3/0/shared/imagenet')
         test_hf = load_dataset(hf_repo, split="validation",
                                     cache_dir='/storage/coda1/p-cmaclellan3/0/shared/imagenet')
+        
+        # ----- Choose a class subset if requested -----
+        # NOTE: set a seed for reproducibility if you like (e.g., random.seed(0))
+        if n_classes is not None and n_classes < 1000:
+            # unique returns a Python list of label ids present in the split
+            all_train_labels = sorted(train_hf.unique("label"))
+            assert len(all_train_labels) == 1000, "Expected 1000 ImageNet-1K classes in train split."
+
+            # Sample a subset ONCE and reuse for both splits
+            # (set a fixed seed here for deterministic subsets)
+            # random.seed(0)
+            chosen_labels = sorted(random.sample(all_train_labels, n_classes))
+            chosen_set = set(chosen_labels)
+
+            # Build a compact label map  old_label -> new_label in [0, n_classes-1]
+            label_map = {old: new for new, old in enumerate(chosen_labels)}
+
+            # Filter both splits to the same chosen labels
+            def keep_subset(example):
+                return example["label"] in chosen_set
+
+            train_hf = train_hf.filter(keep_subset)
+            test_hf  = test_hf.filter(keep_subset)
+
+            # Remap labels to 0..n_classes-1
+            def remap_label(example):
+                example["label"] = label_map[int(example["label"])]
+                return example
+
+            train_hf = train_hf.map(remap_label)
+            test_hf  = test_hf.map(remap_label)
+
+            effective_num_classes = n_classes
+        else:
+            # No subsetting; keep original labels 0..999
+            label_map = None
+            effective_num_classes = 1000
+
         if normalize:
             transform = transforms.Compose([
                 transforms.ToTensor(),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
             ])
-        # Wrap HF dataset so we yield (tensor, label) pairs
-        import types
+        # ----- Torch dataset wrapper -----
         class HFImageNet64(torch.utils.data.Dataset):
-            def __init__(self, hf_ds, transform):
+            def __init__(self, hf_ds, transform, num_classes):
                 self.ds = hf_ds
                 self.transform = transform
-                # Try to infer #classes from features; default to 1000
-                self.num_classes = 1000#getattr(getattr(hf_ds, "features", {}), "get", lambda *_: None)("label")
-                # if self.num_classes and hasattr(self.num_classes, "num_classes"):
-                #     self.num_classes = int(self.num_classes.num_classes)
-                # else:
-                #     self.num_classes = 1000
+                self.num_classes = int(num_classes)
 
             def __len__(self):
                 return len(self.ds)
 
             def __getitem__(self, idx):
-                rec = self.ds[idx]
-                img = rec["image"]   # PIL.Image (decoded lazily)
-                y   = int(rec["label"])
+                rec = self.ds[int(idx)]
+                img = rec["image"]   # PIL.Image
+                y   = int(rec["label"])  # already remapped if subset chosen
                 x   = self.transform(img)
                 return x, y
-        train_dataset = HFImageNet64(train_hf, transform)
-        test_dataset  = HFImageNet64(test_hf,  transform)
+
+        train_dataset = HFImageNet64(train_hf, transform, effective_num_classes)
+        test_dataset  = HFImageNet64(test_hf,  transform, effective_num_classes)
         
     else:
         train_dataset = None
@@ -172,32 +335,46 @@ def train_one_task(model, train_loader, class_id, optimizer,
                    gr=None,
                    kl=False,
                    num_epochs=10, save_path=None, device='cuda', wandb=None):
-    
+    unique_labels = set()
     for epoch in tqdm(range(num_epochs)):
         for batch in tqdm(train_loader):
             images, labels = batch
+            unique_labels.update(labels.tolist())
             images = images.to(device)
             labels = labels.to(device)
 
             if gr is not None:
                 # combine with generated old data
                 x_old, y_old = gr.replay()
-                # randomly select half of the batch size from real data
-                # x_new = images[:images.size(0)//2]
-                # y_new = labels[:images.size(0)//2]
                 images = torch.cat([images, x_old], dim=0)
                 labels = torch.cat([labels, y_old], dim=0)
-                # should have the same batch size = 256 + 64 = 320
-                # assert images.size(0) == 320 # TODO: For now
 
                 # shuffle the combined batch
-                perm = torch.randperm(images.size(0))
-                images = images[perm]
-                labels = labels[perm]
+                # perm = torch.randperm(images.size(0))
+                # images = images[perm]
+                # labels = labels[perm]
 
             optimizer.zero_grad()
             loss = 0
-            ddim_loss = model.diffusion_loss(images, labels)
+            timesteps, noise, noisy_images, model_pred = model.diffusion_loss(images, labels)
+            if gr is not None:
+                replay_size = x_old.size(0)
+                t_replay = timesteps[-replay_size:] # the second half are replayed samples
+                noise_replay = noise[-replay_size:]
+                noisy_images_replay = noisy_images[-replay_size:]
+                model_pred_replay = model_pred[-replay_size:]
+
+                t_batch = timesteps[:-replay_size]
+                noise_batch = noise[:-replay_size]
+                noisy_images_batch = noisy_images[:-replay_size]
+                model_pred_batch = model_pred[:-replay_size]
+
+                ddim_loss = F.mse_loss(model_pred_batch, noise_batch, reduction="mean")
+            else:
+                ddim_loss = F.mse_loss(model_pred, noise, reduction="mean")
+
+
+
             loss = loss + ddim_loss
             if ewc is not None:
                 loss_ewc = ewc.loss(model)#.penalty() if ewc is not None else torch.zeros((), device=device)
@@ -205,14 +382,16 @@ def train_one_task(model, train_loader, class_id, optimizer,
 
             if kl and gr is not None:
                 # compute the generative replay distillation loss
-                b_old = x_old.size(0)
-                t_kl = torch.randint(0, model.scheduler.num_train_timesteps, (b_old,), device=device).long()
-                eps = torch.randn_like(x_old, device=device)
-                x_noisy = model.scheduler.add_noise(x_old, eps, t_kl)
+                # b_old = x_old.size(0)
+                # t_kl = torch.randint(0, model.scheduler.num_train_timesteps, (b_old,), device=device).long()
+                # eps = torch.randn_like(x_old, device=device)
+                # x_noisy = model.scheduler.add_noise(x_old, eps, t_kl)
 
                 with torch.no_grad():
-                    eps_teacher = gr.teacher.unet(x_noisy, t_kl, y_old).sample
-                eps_student = model.unet(x_noisy, t_kl, y_old).sample
+                    # eps_teacher = gr.teacher.unet(x_noisy, t_kl, y_old).sample
+                    eps_teacher = gr.teacher.unet(noisy_images_replay, t_replay, y_old).sample
+                # eps_student = model.unet(x_noisy, t_kl, y_old).sample
+                eps_student = model_pred_replay
                 loss_kl = F.mse_loss(eps_student, eps_teacher)
                 loss = loss + model.gr_kl * loss_kl
 
@@ -230,15 +409,17 @@ def train_one_task(model, train_loader, class_id, optimizer,
 
 
         # visualize every 50 epochs
-        if save_path is not None and epoch % 20 == 0:
+        if save_path is not None and epoch % 50 == 0:
             # sample 8 images for each label from 0 to 9
             out_dir = Path(save_path) / f"task_{class_id}" / f"epoch_{epoch:05d}"
             out_dir.mkdir(parents=True, exist_ok=True)
             # num_classes = model.num_class_labels
-            rows = model.num_class_labels
+            # rows = model.num_class_labels
+            # only want to visualize the current task's classes
+            # rows
             cols = 8
             all_tensors = []
-            for c in range(rows):
+            for c in unique_labels:
                 pils = model.sample(
                     batch_size=cols,
                     labels=[c] * cols,
