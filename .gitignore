@@ -3,4 +3,5 @@
 *.out
 *.json
 *.sh
+*.err
 /archive/data/

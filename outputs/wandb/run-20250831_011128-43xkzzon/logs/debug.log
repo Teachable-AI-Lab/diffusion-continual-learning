@@ -1,0 +1,23 @@
+2025-08-31 01:11:28,763 INFO    MainThread:7614 [wandb_setup.py:_flush():81] Current SDK version is 0.21.3
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_setup.py:_flush():81] Configure stats pid to 7614
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_setup.py:_flush():81] Loading settings from /storage/home/hcoda1/1/agupta886/.config/wandb/settings
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_setup.py:_flush():81] Loading settings from /storage/scratch1/1/agupta886/diffusion-continual-learning/wandb/settings
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_init.py:setup_run_log_directory():686] Logging user logs to /storage/home/hcoda1/1/agupta886/scratch/diffusion-continual-learning/outputs/wandb/run-20250831_011128-43xkzzon/logs/debug.log
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_init.py:setup_run_log_directory():687] Logging internal logs to /storage/home/hcoda1/1/agupta886/scratch/diffusion-continual-learning/outputs/wandb/run-20250831_011128-43xkzzon/logs/debug-internal.log
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_init.py:init():813] calling init triggers
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_init.py:init():818] wandb.init called with sweep_config: {}
+config: {'use_wandb': True, 'wandb_project': 'diffusion-continual-learning', 'wandb_run_name': 'mnist-rank1-10k-fisher-analysis', 'output_dir': '/storage/home/hcoda1/1/agupta886/scratch/diffusion-continual-learning/outputs', 'seed': 123, 'dataset': 'mnist', 'batch_size': 128, 'normalize': True, 'greyscale': False, 'num_classes': 10, 'use_ewc': True, 'ewc_lambda': 10000.0, 'ewc_fisher_type': 'rank1', 'use_generative_replay': True, 'gr_alpha': 1.0, 'gr_pool_size_per_class': 500, 'gr_num_inference_steps': 50, 'gr_eta': 0.0, 'use_distillation': True, 'gr_kl': 1.0, 'lr': 0.0002, 'epochs': 100, 'fisher_dense': True, '_wandb': {}}
+2025-08-31 01:11:28,764 INFO    MainThread:7614 [wandb_init.py:init():854] starting backend
+2025-08-31 01:11:34,865 INFO    MainThread:7614 [wandb_init.py:init():857] sending inform_init request
+2025-08-31 01:11:34,939 INFO    MainThread:7614 [wandb_init.py:init():865] backend started and connected
+2025-08-31 01:11:34,940 INFO    MainThread:7614 [wandb_init.py:init():936] updated telemetry
+2025-08-31 01:11:34,992 INFO    MainThread:7614 [wandb_init.py:init():960] communicating run to backend with 90.0 second timeout
+2025-08-31 01:11:37,091 INFO    MainThread:7614 [wandb_init.py:init():1011] starting run threads in backend
+2025-08-31 01:11:37,240 INFO    MainThread:7614 [wandb_run.py:_console_start():2494] atexit reg
+2025-08-31 01:11:37,240 INFO    MainThread:7614 [wandb_run.py:_redirect():2342] redirect: wrap_raw
+2025-08-31 01:11:37,240 INFO    MainThread:7614 [wandb_run.py:_redirect():2411] Wrapping output streams.
+2025-08-31 01:11:37,240 INFO    MainThread:7614 [wandb_run.py:_redirect():2434] Redirects installed.
+2025-08-31 01:11:37,275 INFO    MainThread:7614 [wandb_init.py:init():1057] run started, returning control to user process
+2025-08-31 02:30:40,505 INFO    wandb-AsyncioManager-main:7614 [service_client.py:_forward_responses():84] Reached EOF.
+2025-08-31 02:30:40,524 INFO    wandb-AsyncioManager-main:7614 [mailbox.py:close():137] Closing mailbox, abandoning 1 handles.
