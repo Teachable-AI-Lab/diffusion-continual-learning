@@ -411,7 +411,7 @@ def main():
                     max(frobF_sq + (c_stream_f ** 2) * (v_norm2_stream ** 2) - 2.0 * c_stream_f * uTFu_stream, 0.0)
                 )
                 # Diagonal (streaming) uses provided F_diag_stream entries
-                diag_stream_norm_sq = float(torch.sum(F_diag_stream.pow(2)))
+                diag_stream_norm_sq = float(torch.dot(F_diag_stream, F_diag_stream))
                 err_diag_stream_abs = math.sqrt(max(frobF_sq - diag_stream_norm_sq, 0.0))
 
             # Relative

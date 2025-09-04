@@ -47,6 +47,11 @@ try:
     args = utils.load_config_from_json(initial_args.config)
 except (FileNotFoundError, ValueError) as e:
     parser.error(str(e))
+
+## default args
+args.power_iters = getattr(args, 'power_iters', 1)
+args.check_fisher = getattr(args, 'check_fisher', False)
+
 # --- Configuration is loaded into 'args' ---
 print("Configuration loaded successfully:")
 print("-" * 30)
@@ -93,19 +98,27 @@ print("Image shape:", full_train_loader.dataset[0][0].shape)
 
 # load model and initialize optimizer
 print("Loading model...")
-model = build_conditional_ddim(
-    in_channel=channels,
-    image_size=im_size,
-    num_class_labels=args.num_classes,
-    ewc_lambda=args.ewc_lambda,
-    gr_kl=args.gr_kl,
 
-    # block_out_channels=(16,),
-    # down_block_types=("DownBlock2D",),
-    # up_block_types=("UpBlock2D",),
-    # norm_num_groups=8,
-    # layers_per_block=1,
-).to(device)
+if getattr(args, 'model_size', "big") == "big":
+    model = build_conditional_ddim(
+        in_channel=channels,
+        image_size=im_size,
+        num_class_labels=args.num_classes,
+        ewc_lambda=args.ewc_lambda,
+        gr_kl=args.gr_kl).to(device)
+else:
+    model = build_conditional_ddim(
+        in_channel=channels,
+        image_size=im_size,
+        num_class_labels=args.num_classes,
+        ewc_lambda=args.ewc_lambda,
+        gr_kl=args.gr_kl,
+        block_out_channels=(16,),
+        down_block_types=("DownBlock2D",),
+        up_block_types=("UpBlock2D",),
+        norm_num_groups=8,
+        layers_per_block=1,
+    ).to(device)
 print("Model parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
 
@@ -124,7 +137,13 @@ for task_id in all_task_ids:
     print(f"Training on task {task_id}...")
     # if args.use_wandb:
         # wandb.log({"task_id": task_id})
-    exp_path = f"{args.dataset}-{args.ewc_fisher_type}-{"gr" if args.use_generative_replay else ""}-{"distil" if args.use_distillation else ""}"
+    # Build experiment path segments robustly
+    _exp_segments = [str(args.dataset), str(args.ewc_fisher_type)]
+    if args.use_generative_replay:
+        _exp_segments.append("gr")
+    if args.use_distillation:
+        _exp_segments.append("distil")
+    exp_path = "-".join(_exp_segments)
     train_loader = cl_train_loader[task_id]
     utils.train_one_task(model, train_loader, task_id, optimizer, 
                      ewc, 
@@ -138,7 +157,98 @@ for task_id in all_task_ids:
     model_path = ROOT / exp_path / f"model-task{task_id}.pt"
     model_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), model_path)
+    if args.check_fisher:
+        loaders_by_class = {0: train_loader}
+        param_scores = compute_param_scores(
+            model,
+            loaders_by_class,
+            device=device,
+            target_class=0,
+            max_samples=None,
+        )  # shape (B, D) on device
+        B = param_scores.shape[0]
+        F = None
+        if device.type == "cuda":
+            try:
+                F = empirical_fisher_dense(param_scores)  # (D, D)
+                frobF = torch.linalg.norm(F).item()
+                frobF_sq = frobF * frobF
+            except Exception as _e:
+                print(f"[Fisher] Dense Fisher failed ({_e}).")
+            if F is not None:
+                c_rank, mu_rank, diag_rank = compute_rank1_coeff_and_mean(
+                    model, train_loader, device=device, max_samples=None
+                )
+                # Ensure vectors match param_scores device/dtype for safe matmul/dot
+                mu_rank = mu_rank.to(param_scores.device, dtype=param_scores.dtype)
+                c_eig, mu_eig = compute_top_eigenpair_two_pass(
+                    model,
+                    train_loader,
+                    device=device,
+                    max_samples=None,
+                    power_iters=args.power_iters,
+                )
+                mu_eig = mu_eig.to(param_scores.device, dtype=param_scores.dtype)
 
+                ## Find the Norm of F - mu^T @ mu (use floats to avoid Tensor truthiness issues)
+                mu_rank_norm = float(torch.dot(mu_rank, mu_rank))  # ||mu_rank||^2
+                c_rank_f = float(c_rank)
+                Su_rank = float(torch.sum((param_scores @ mu_rank).pow(2)) / float(B))
+                err_rank_abs = math.sqrt(
+                    max(
+                        frobF_sq + (c_rank_f * c_rank_f) * (mu_rank_norm * mu_rank_norm) - 2.0 * c_rank_f * Su_rank,
+                        0.0,
+                    )
+                )
+
+                mu_eig_norm = float(torch.dot(mu_eig, mu_eig))  # ||mu_eig||^2
+                c_eig_f = float(c_eig)
+                Su_eig = float(torch.sum((param_scores @ mu_eig).pow(2)) / float(B))
+                err_eig_abs = math.sqrt(
+                    max(
+                        frobF_sq + (c_eig_f * c_eig_f) * (mu_eig_norm * mu_eig_norm) - 2.0 * c_eig_f * Su_eig,
+                        0.0,
+                    )
+                )
+
+                ## Find Norm of F - diag
+                diag_sq_sum = float(torch.dot(diag_rank, diag_rank))
+                err_diag_abs = math.sqrt(max(frobF_sq - diag_sq_sum, 0.0))
+
+                if args.use_wandb:
+                    # Compute relative errors once for reuse
+                    err_rank_rel = err_rank_abs / (frobF + 1e-12)
+                    err_eig_rel = err_eig_abs / (frobF + 1e-12)
+                    err_diag_rel = err_diag_abs / (frobF + 1e-12)
+
+                    # Log scalars
+                    wandb.log({
+                        f"fisher/{task_id}/frobF": frobF,
+                        f"fisher/{task_id}/err_rank_rel": err_rank_rel,
+                        f"fisher/{task_id}/err_eig_rel": err_eig_rel,
+                        f"fisher/{task_id}/err_diag_rel": err_diag_rel,
+                    })
+
+                    # Also log a bar chart and histogram for the three errors (one per task)
+                    try:
+                        # Bar chart via W&B plot API
+                        table = wandb.Table(columns=["metric", "value"],
+                                            data=[["rank", float(err_rank_rel)],
+                                                  ["eig", float(err_eig_rel)],
+                                                  ["diag", float(err_diag_rel)]])
+                        bar = wandb.plot.bar(table, "metric", "value",
+                                             title=f"Fisher relative errors (task {task_id})")
+                        wandb.log({f"fisher/{task_id}/rel_errors_bar": bar})
+
+                        # Histogram of the three values
+                        wandb.log({
+                            f"fisher/{task_id}/rel_errors_hist": wandb.Histogram([
+                                float(err_rank_rel), float(err_eig_rel), float(err_diag_rel)
+                            ])
+                        })
+                    except Exception as _plot_e:
+                        # Fallback: ignore plotting failures but keep scalars
+                        print(f"[W&B] Plot logging failed for task {task_id}: {_plot_e}")
     # test fid on each of previous tasks
     fids = []
     for eval_task_id in range(task_id + 1):
@@ -169,38 +279,27 @@ for task_id in all_task_ids:
     # adding continual learning components
     if args.use_ewc:
         if args.ewc_fisher_type == "top_eig":
-            c, mu = compute_top_eigenpair_two_pass(
-                model, train_loader, device=device, max_samples=10000, power_iters=args.power_iters
-            )
+            if "c_eig" in locals() and "mu_eig" in locals():
+                c, mu = c_eig, mu_eig
+            else:
+                c, mu = compute_top_eigenpair_two_pass(model, train_loader, device=device, max_samples=None, power_iters=args.power_iters)
             diag = None
-        elif args.ewc_fisher_type == "diag":
-            c, mu, diag = compute_rank1_coeff_and_mean(
-                model, train_loader, device=device, max_samples=10000
-            )
-            c, mu = None, None
-        elif args.ewc_fisher_type == "rank1_opt":
-            c, mu, diag = compute_rank1_coeff_and_mean(
-                model, train_loader, device=device, max_samples=10000
-            )
-            diag = None
-
+        else:
+            if "c_rank" in locals() and "mu_rank" in locals() and "diag_rank" in locals():
+                c, mu, diag = c_rank, mu_rank, diag_rank
+            else:
+                c, mu, diag = compute_rank1_coeff_and_mean(
+                    model, train_loader, device=device, max_samples=None
+                )
         if ewc is None:
             # create a new EWC object
             fisher_type = args.ewc_fisher_type
-            # c, mu, diag = compute_rank1_coeff_and_mean(
-            #     model, train_loader, device=device, max_samples=10000
-            # )
             # save the fisher information too
             torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
-
             frozen_model = utils.freeze_model(model)
             ewc = EWC(frozen_model, fisher_type, c=c, mu=mu, diag=diag)
         else:
             # add a new task to the existing EWC object
-            # c, mu, diag = compute_rank1_coeff_and_mean(
-            #     model, train_loader, device=device, max_samples=10000
-            # )
-            # save the fisher information too
             torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
 
             frozen_model = utils.freeze_model(model)
@@ -219,4 +318,7 @@ for task_id in all_task_ids:
                                  device=device)
         else:
             frozen_model = utils.freeze_model(model)
-            gr.update_teacher(frozen_model, old_classes=list(range((task_id + 1)*args.group_size)))
+            gr.update_teacher(
+                frozen_model,
+                old_classes=list(range((task_id + 1) * args.group_size))
+            )

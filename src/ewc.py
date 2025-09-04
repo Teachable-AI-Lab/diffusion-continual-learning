@@ -30,7 +30,7 @@ class EWC:
                 total = total + 0.5 * (diag.to(theta) * (delta * delta)).sum()
             else:
                 proj = (mu.to(theta) * delta).sum()
-                if self.fisher_type == "rank1_opt":
+                if self.fisher_type == "rank1_opt" or self.fisher_type == "top_eig":
                     total = total + 0.5 * float(c) * (proj * proj)
                 else:  # "rank1"
                     total = total + 0.5 * (proj * proj)

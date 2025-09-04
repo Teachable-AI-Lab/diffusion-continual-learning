@@ -183,12 +183,14 @@ class ConditionalDDIM(nn.Module):
         class_labels = labels.to(device)
 
         model_pred = self.unet(noisy_images, timesteps, class_labels).sample
-        if self.scheduler.config.prediction_type == "epsilon":
-            target = noise
-        else:
-            target = self.scheduler.get_velocity(images, noise, timesteps)
+        # if self.scheduler.config.prediction_type == "epsilon":
+            # target = noise
+        # else:
+            # target = self.scheduler.get_velocity(images, noise, timesteps)
+        
+        return timesteps, noise, noisy_images, model_pred
 
-        return F.mse_loss(model_pred, target, reduction="mean")
+        # return F.mse_loss(model_pred, target, reduction="mean")
 
     # ---------- Sampling ----------
 
