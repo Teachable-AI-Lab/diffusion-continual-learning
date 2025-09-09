@@ -19,6 +19,7 @@ def compute_param_scores(
     device: torch.device = torch.device("cuda"),
     target_class: int = 0,     # match your `if class_id != 0: continue`
     max_samples: int | None = None,
+    time_level: int = None,  # if None, use random t in [0, 1000)
 ):
     """
     Compute per-sample parameter scores (gradients) for a DDPM-style model.
@@ -66,8 +67,10 @@ def compute_param_scores(
 
             # Fix timestep t
             # random t in [0, 1000)
-            t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
-            # t = torch.full((1,), int(t_level), device=device, dtype=torch.long)
+            if time_level is None:
+                t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
+            else:
+                t = torch.tensor(time_level, device=device, dtype=torch.long)
 
             # Add noise
             noise = torch.randn_like(img, device=device)
@@ -84,6 +87,8 @@ def compute_param_scores(
             # Compute per-sample loss and backward for grads w.r.t. UNet params
             unet.zero_grad()
             loss = F.mse_loss(pred_noise, noise)
+            if loss.isnan() or loss.isinf():
+                raise ValueError("Loss is NaN or Inf. Check your data and forward pass.")
             loss.backward()
 
             # Flatten/concat gradients into one vector
@@ -107,6 +112,8 @@ def compute_param_scores(
     if len(param_scores) == 0:
         raise RuntimeError("Collected zero param_scores. Check your data and forward pass.")
     param_scores = torch.stack(param_scores, dim=0).to(device)
+    if torch.any(param_scores.isnan()) or torch.any(param_scores.isinf()):
+        raise ValueError("param_scores contain NaN or Inf values.")
     return param_scores
 
 
