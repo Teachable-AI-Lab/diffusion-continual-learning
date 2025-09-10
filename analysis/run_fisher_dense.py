@@ -4,6 +4,10 @@ from pathlib import Path
 
 import torch
 torch.backends.cuda.preferred_linalg_library("magma")
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+
 import wandb
 
 import src.utils as utils
@@ -91,7 +95,7 @@ def main():
     if args.use_wandb:
         wandb.init(
             project=args.wandb_project,
-            name=args.wandb_run_name or ("fisher-dense-vectors" if initial_args.need_vectors else "fisher-bxb"),
+            name=f"{args.wandb_run_name}-fisher-dense" or ("fisher-dense-vectors" if initial_args.need_vectors else "fisher-bxb"),
             config=vars(args),
             dir=args.output_dir,
         )
@@ -243,7 +247,7 @@ def main():
             )
 
             if args.use_wandb:
-                prefix = f"task/{task_id}"
+                prefix = f"task/tid{task_id}_mep{main_epoch}"
                 metrics = {
                     f"{prefix}/analysis_step": main_epoch,
                     f"{prefix}/fisher_dense/frobF": frobF,
@@ -275,7 +279,7 @@ def main():
             try:
                 fid = evaluate_fid(model, cl_test_loader[task_id], device)
                 if args.use_wandb:
-                    prefix = f"task/{task_id}"
+                    prefix = f"task/tid{task_id}_mep{main_epoch}"
                     wandb.log({f"{prefix}/analysis_step": main_epoch, f"{prefix}/eval/fid": fid})
             except Exception:
                 pass

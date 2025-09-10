@@ -181,11 +181,19 @@ def fisher_analysis(model, args, train_loader, device, task_id, main_epoch, exp_
     eigvec_flag = bool(getattr(args, "eigvec_analysis", False))
     top_vec = None
     with torch.no_grad():
-        if eigvec_flag:
-            _U, S_svd, Vh_full = torch.linalg.svd(param_scores, full_matrices=False)
-            top_vec = Vh_full[0, :]
-        else:
-            S_svd = torch.linalg.svdvals(param_scores)
+        try:
+            if eigvec_flag:
+                _U, S_svd, Vh_full = torch.linalg.svd(param_scores, full_matrices=False)
+                top_vec = Vh_full[0, :]
+            else:
+                S_svd = torch.linalg.svdvals(param_scores)
+        except:
+            print(f"[Fisher] Warning: SVD failed once for task {task_id}")
+            if eigvec_flag:
+                _U, S_svd, Vh_full = torch.linalg.svd(param_scores, full_matrices=False)
+                top_vec = Vh_full[0, :]
+            else:
+                S_svd = torch.linalg.svdvals(param_scores)
         lambdas = (S_svd ** 2) / float(B)
         frobF_sq_t = torch.sum(lambdas ** 2)
         frobF = float(torch.sqrt(frobF_sq_t + 1e-20))
@@ -277,7 +285,7 @@ def fisher_analysis(model, args, train_loader, device, task_id, main_epoch, exp_
     )
 
     if getattr(args, "use_wandb", False):
-        prefix = f"task/{task_id}"
+        prefix = f"task/tid{task_id}_mep{main_epoch}"
         metrics = {
             f"{prefix}/analysis_step": main_epoch,
             f"{prefix}/fisher/frobF": frobF,
@@ -307,7 +315,7 @@ def fisher_analysis(model, args, train_loader, device, task_id, main_epoch, exp_
                     vals,
                     xname="rank",
                     yname="eigenvalue",
-                    prefix=f"task/{task_id}",
+                    prefix=f"task/tid{task_id}_mep{main_epoch}",
                 )
         except Exception:
             pass

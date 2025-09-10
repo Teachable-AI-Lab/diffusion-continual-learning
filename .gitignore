@@ -3,6 +3,7 @@
 *.out
 *.json
 *.sh
+*.sbatch
 *.err
 /archive/data/
 outputs/

@@ -211,13 +211,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 		return 2
 
 	project_path: Optional[str] = args.project_path
-	# if not project_path:
-	# 	if args.entity and args.project:
-	# 		project_path = f"{args.entity}/{args.project}"
-	# 	else:
-	# 		print("Must provide --project-path or both --entity and --project", file=sys.stderr)
-	# 		return 2
-
 	api = wandb.Api()
 
 	filters = None

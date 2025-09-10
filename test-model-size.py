@@ -53,21 +53,35 @@ def make_model(variant: str, in_channels: int, image_size: int, num_classes: int
 
 def main():
 	# Defaults matching common setups in this repo
-	print("Model parameter counts for various DDIM variants:\n")
-	image_size = 32
-	num_classes = 10
-	variants = ["small", "small-double", "small-big", "big"]
-	channel_setups = [
-		(1, "grayscale"),
-		(3, "rgb"),
-	]
+	# print("Model parameter counts for various DDIM variants:\n")
+	# image_size = 32
+	# num_classes = 10
+	# variants = ["small", "small-double", "small-big", "big"]
+	# channel_setups = [
+	# 	(1, "grayscale"),
+	# 	(3, "rgb"),
+	# ]
 
-	for in_ch, name in channel_setups:
-		print(f"\n== {name.upper()} (C={in_ch}, H=W={image_size}, classes={num_classes}) ==")
-		for v in variants:
-			model = make_model(v, in_ch, image_size, num_classes)
-			n = count_params(model)
-			print(f"{v:12s}: {n:,} params")
+	# for in_ch, name in channel_setups:
+	# 	print(f"\n== {name.upper()} (C={in_ch}, H=W={image_size}, classes={num_classes}) ==")
+	# 	for v in variants:
+	# 		model = make_model(v, in_ch, image_size, num_classes)
+	# 		n = count_params(model)
+	# 		print(f"{v:12s}: {n:,} params")
+	    # Determine image shape from real dataset transform
+	import src.utils as utils
+	for dataset, num_classes in {"mnist" : 10, "fmnist" : 10, "cifar10" : 10, "imagenet64" : 1000}.items():
+		print(f"\nDataset: {dataset}")
+		_, _, full_train_loader, _ = utils.get_cl_dataset(
+			dataset,
+			normalize=True,
+			greyscale=False,
+			group_size=1,
+			n_classes=num_classes,
+		)
+		sample_im, _ = full_train_loader.dataset[0]
+		channels = sample_im.shape[0]; im_size = sample_im.shape[1]
+		print(f"Image shape: C={channels}, H=W={im_size}, classes={num_classes} for {dataset}")
 
 
 if __name__ == "__main__":
