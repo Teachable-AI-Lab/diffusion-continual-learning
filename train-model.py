@@ -77,11 +77,7 @@ set_seed(args.seed)
 
 # load datasets
 print("Loading datasets...")
-# group_size = 2
-# if args.dataset == "cifar100":
-#     group_size = 5
-# if args.dataset == "imagenet64":
-#     group_size = 50
+
 print(f"Using group size of {args.group_size} for dataset {args.dataset}.")
 cl_train_loader, cl_test_loader, full_train_loader, full_test_loader = utils.get_cl_dataset(
         args.dataset, batch_size=args.batch_size, normalize=args.normalize, greyscale=args.greyscale,
@@ -124,7 +120,7 @@ for task_id in all_task_ids:
     print(f"Training on task {task_id}...")
     # if args.use_wandb:
         # wandb.log({"task_id": task_id})
-    exp_path = f"{args.dataset}-{args.ewc_fisher_type}-{"gr" if args.use_generative_replay else ""}-{"distil" if args.use_distillation else ""}"
+    exp_path = f"{args.dataset}-{args.ewc_fisher_type}{'-gr' if args.use_generative_replay else ''}{'-distil' if args.use_distillation else ''}-{args.seed}"
     train_loader = cl_train_loader[task_id]
     utils.train_one_task(model, train_loader, task_id, optimizer, 
                      ewc, 

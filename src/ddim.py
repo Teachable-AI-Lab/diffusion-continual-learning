@@ -266,6 +266,74 @@ class ConditionalDDIM(nn.Module):
 
         return latents
 
+    @torch.no_grad()
+    def sample_with_noise(
+        self,
+        noise: torch.Tensor,
+        labels: Union[int, Iterable[int], torch.Tensor],
+        num_inference_steps: int = 50,
+        eta: float = 0.0,
+        save: Optional[str] = None,
+        device: Optional[Union[str, torch.device]] = None,
+        guidance_scale: Optional[float] = None,  # accepted for BC, but must be 0/None
+    ) -> torch.Tensor:
+        """
+        DDIM sampling with pre-generated noise for consistent comparison across methods.
+
+        noise : torch.Tensor
+            Pre-generated noise tensor of shape (batch_size, channels, height, width)
+        labels : int | iterable[int] | LongTensor
+            If an int is given, it's repeated across the batch.
+        guidance_scale : must be None or 0.0 (CFG is disabled in this pure version).
+        """
+        if guidance_scale not in (None, 0, 0.0):
+            raise ValueError("This pure-conditional implementation does not support CFG. "
+                             "Set guidance_scale=None/0, or use the earlier file.")
+
+        self.unet.eval()
+
+        device = device or next(self.unet.parameters()).device
+        if isinstance(device, str):
+            device = torch.device(device)
+
+        batch_size = noise.shape[0]
+        
+        # Prepare labels
+        if isinstance(labels, int):
+            class_labels = torch.full((batch_size,), labels, dtype=torch.long, device=device)
+        else:
+            class_labels = torch.as_tensor(list(labels) if not torch.is_tensor(labels) else labels,
+                                           dtype=torch.long, device=device)
+            if class_labels.numel() == 1 and batch_size > 1:
+                class_labels = class_labels.repeat(batch_size)
+            assert class_labels.shape[0] == batch_size, "labels length must match batch_size"
+
+        # Use provided noise (ensure it's on the right device)
+        latents = noise.to(device)
+
+        # DDIM setup
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
+        extra_step_kwargs = {"eta": eta} if "eta" in self.scheduler.step.__code__.co_varnames else {}
+
+        for t in self.scheduler.timesteps:
+            latent_model_input = self.scheduler.scale_model_input(latents, t)
+            eps = self.unet(latent_model_input, t, class_labels).sample
+            step_out = self.scheduler.step(eps, t, latents, **extra_step_kwargs)
+            latents = step_out.prev_sample
+
+        if save is not None:
+            latents_pil = _to_pil_list(latents)
+            save = str(save)
+            root, ext = os.path.splitext(save)
+            if batch_size == 1 and ext.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+                latents_pil[0].save(save)
+            else:
+                _ensure_dir(save)
+                for i, im in enumerate(latents_pil):
+                    im.save(os.path.join(save, f"sample_{i:04d}.png"))
+
+        return latents
+
 
 def build_conditional_ddim(
     in_channel: int,

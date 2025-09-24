@@ -59,7 +59,7 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
         from datasets import load_dataset
 
         # HF mirror with train/test + 196-class label
-        hf = load_dataset("Donghyun99/Stanford-Cars", cache_dir='/storage/coda1/p-nisha3/0/shared/stanfordcars')
+        hf = load_dataset("Donghyun99/Stanford-Cars", cache_dir='/storage/home/hcoda1/1/agupta886/scratch/stanfordcars')
         if greyscale:
             transform = transforms.Compose([
                 transforms.Resize((128, 128)),
@@ -188,10 +188,10 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
         from datasets import load_dataset  # HF datasets (doesn't shadow torchvision.datasets)
         hf_repo = "benjamin-paine/imagenet-1k-32x32"   # alt: "sradc/imagenet_resized_64x64"
         train_hf = load_dataset(hf_repo, split="train",
-                                     cache_dir='/storage/coda1/p-nisha3/0/shared/imagenet')
+                                     cache_dir='/storage/home/hcoda1/1/agupta886/scratch/imagenet_dataset')
         test_hf = load_dataset(hf_repo, split="validation",
-                                    cache_dir='/storage/coda1/p-nisha3/0/shared/imagenet')
-        
+                                    cache_dir='/storage/home/hcoda1/1/agupta886/scratch/imagenet_dataset')
+
         # ----- Choose a class subset if requested -----
         # NOTE: set a seed for reproducibility if you like (e.g., random.seed(0))
         if n_classes is not None and n_classes < 1000:
@@ -283,8 +283,8 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
             subset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=0,    # adjust as needed
-            pin_memory=True
+            num_workers=4,    # adjust as needed
+            pin_memory=False
         )
 
     # test_indices_per_class = {i: [] for i in range(10)}
@@ -305,12 +305,13 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
             subset,
             batch_size=512,
             shuffle=True,
-            num_workers=0,    # adjust as needed
-            pin_memory=True
+            num_workers=4,    # adjust as needed
+            pin_memory=False
         )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=0, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=False)
+    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=4, pin_memory=False)
+    print(f"Dataset {name}: {len(train_dataset)} train samples, {len(test_dataset)} test samples.")
     return train_loaders, test_loaders, train_loader, test_loader
 
 def load_config_from_json(config_path):

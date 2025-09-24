@@ -188,7 +188,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 	# parser.add_argument("--project", type=str, default=None, help="W&B project (if not using --project-path)")
 	parser.add_argument("--state", type=str, default="finished", help="Filter by run state (finished|running|crashed|any)")
 	parser.add_argument("--max-runs", type=int, default=None, help="Limit number of runs to process")
-	parser.add_argument("--output", type=str, default="avg_fid_summary.csv", help="Output CSV file path")
+	parser.add_argument("--output", type=str, default="avg_fid_summary_new.csv", help="Output CSV file path")
 	parser.add_argument(
 		"--format",
 		type=str,

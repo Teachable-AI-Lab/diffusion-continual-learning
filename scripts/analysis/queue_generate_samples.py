@@ -24,7 +24,7 @@ from typing import List
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Queue generate_samples.py across many model folders")
-    p.add_argument("--models-root", default="/storage/coda1/p-cmaclellan3/0/shared/iclr-2026-models", help="Directory that contains model subfolders")
+    p.add_argument("--models-root", default="/storage/home/hcoda1/1/agupta886/scratch/imagenet", help="Directory that contains model subfolders")
     p.add_argument("--output-root", required=False, default="/storage/coda1/p-cmaclellan3/0/shared/iclr-2026-samples",
                    help="Base directory to store outputs; per-model subdir will be appended")
     p.add_argument("--sbatch-dir", required=False, default="/storage/home/hcoda1/1/agupta886/scratch/diffusion-continual-learning/scripts/sampling_scripts",
@@ -60,7 +60,7 @@ def seed_from_dirname(dirname: str) -> int:
 
 
 def build_sbatch_text(job_name, dataset, checkpoint, output_dir, seed = 123, batch_size = 1024, time = "2:00:00",
-                       cpus_per_task = 4, mem_per_cpu: str = "16G", gpus = "v100:1",
+                       cpus_per_task = 8, mem_per_cpu: str = "16G", gpus = "a100:1",
                          account = "gts-cmaclellan3" , qos = "embers"):
     """Build sbatch script text; logs squeue/scontrol context into .out at start and end."""
 

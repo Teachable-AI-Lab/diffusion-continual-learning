@@ -123,7 +123,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--state", type=str, default="finished", help="Filter by run state (finished|running|crashed|any)")
     parser.add_argument("--max-runs", type=int, default=None, help="Limit number of runs to process")
-    parser.add_argument("--out-dir", type=str, default="fid_triangles", help="Directory to write per-run CSV tables")
+    parser.add_argument("--out-dir", type=str, default="fid_triangles_old", help="Directory to write per-run CSV tables")
     parser.add_argument("--combined-long", type=str, default=None, help="Optional path to write a combined long CSV across runs")
     parser.add_argument("--verbose", default=True, action="store_true", help="Verbose logging")
 

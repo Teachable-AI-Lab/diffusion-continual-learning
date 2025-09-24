@@ -7,3 +7,6 @@
 *.err
 /archive/data/
 outputs/
+tables_and_figures/
+*/__pycache__/
+*/final_images*/
