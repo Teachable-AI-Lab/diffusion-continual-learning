@@ -28,7 +28,11 @@ class EWC:
             delta = theta - theta0.to(theta)
             if self.fisher_type == "diag":
                 total = total + 0.5 * (diag.to(theta) * (delta * delta)).sum()
-            else:
+            elif self.fisher_type == "top_eig" and type(mu) is tuple:
+                for mu_i, c_i in zip(mu, c):
+                    proj = (mu_i.to(theta) * delta).sum()
+                    total = total + 0.5 * float(c_i) * (proj * proj)
+            else:  # "rank1" | "rank1_opt"
                 proj = (mu.to(theta) * delta).sum()
                 if self.fisher_type == "rank1_opt" or self.fisher_type == "top_eig":
                     total = total + 0.5 * float(c) * (proj * proj)

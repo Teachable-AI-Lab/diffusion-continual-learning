@@ -1,0 +1,5 @@
+dataset,final_fid
+cifar10,115.410
+fmnist,103.955
+imagenet32,265.902
+mnist,102.642

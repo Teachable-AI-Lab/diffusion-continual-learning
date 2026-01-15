@@ -269,7 +269,7 @@ def compute_top_eigenpair_two_pass(
     max_samples: int | None = None,
     eps: float = 1e-12,
     dtype: torch.dtype = torch.float64,
-    power_iters: int = 1,  # number of stochastic power iterations in pass 1
+    power_iters: int = 4,  # number of stochastic power iterations in pass 1
 ):
     """
     Two-pass streaming computation of the top eigenvector and eigenvalue of
@@ -386,134 +386,299 @@ def compute_top_eigenpair_two_pass(
     return lambda_max, u_max
 
 
-# def compute_top_eigenpair_two_pass(
-#     model,
-#     loader,
-#     device: torch.device = torch.device("cuda"),
-#     max_samples: int | None = None,
-#     eps: float = 1e-12,
-#     dtype: torch.dtype = torch.float64,
-#     power_iters: int = 1,   # number of passes of power iteration before final combined pass
-# ):
-#     """
-#     Multi-pass streaming computation of the top eigenvector and eigenvalue of
-#     F = E[g g^T] for UNet gradients g.
+def compute_topk_eigenpairs_two_pass(
+    model,
+    loader,
+    device: torch.device = torch.device("cuda"),
+    k: int = 5,
+    max_samples: int | None = None,
+    eps: float = 1e-12,
+    dtype: torch.dtype = torch.float64,
+    power_iters: int = 6,
+):
+    """
+    Two-pass streaming computation of the top-k eigenvectors/eigenvalues of
+    F = E[g g^T] for UNet gradients g.
 
-#     Passes 1..n: stochastic power iteration to refine u
-#     Final pass:  do one more power iteration update and accumulate Rayleigh quotient
+    Pass 1: stochastic orthogonalized power iteration to estimate top-k eigenvectors.
+    Pass 2: compute Rayleigh quotients for each estimated vector.
 
-#     Returns:
-#         u_max       : top eigenvector of F (length D)
-#         lambda_max  : top eigenvalue of F
-#     """
-#     model.eval()
-#     model = model.to(device)
+    Returns:
+        lambdas : list of top-k eigenvalues
+        U       : tensor (k, D) of corresponding eigenvectors
+    """
+    model.eval()
+    model = model.to(device)
 
-#     # ---------------- INIT ----------------
-#     D = sum(p.numel() for p in model.unet.parameters() if p.requires_grad)
-#     u = torch.randn(D, device=device, dtype=dtype)
-#     u /= torch.norm(u)
+    # ---------------- SETUP ----------------
+    D = sum(p.numel() for p in model.unet.parameters() if p.requires_grad)
+    U = torch.randn(k, D, device=device, dtype=dtype)
+    # orthonormalize initial basis
+    U, _ = torch.linalg.qr(U.T, mode="reduced")
+    U = U.T  # shape (k, D)
 
-#     # ---------------- PASSES 1..n: Power iteration ----------------
-#     for p_iter in range(power_iters):
-#         acc = torch.zeros_like(u, device=device, dtype=dtype)
-#         N = 0
-#         pbar = tqdm(loader, desc=f"[pass {p_iter+1}/{power_iters}] power iter")
-#         for images, labels in pbar:
-#             images = _maybe_to(images, device)
-#             labels = _maybe_to(labels, device)
-#             for img, label in zip(images, labels):
-#                 img = img.unsqueeze(0)
-#                 label = label.unsqueeze(0)
+    # ---------------- PASS 1: stochastic power iteration ----------------
+    for _ in range(power_iters):
+        acc = torch.zeros_like(U)
+        N = 0
 
-#                 t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
-#                 noise = torch.randn_like(img, device=device)
-#                 noisy_x = model.scheduler.add_noise(img, noise, t)
+        for images, labels in loader:
+            images = _maybe_to(images, device)
+            labels = _maybe_to(labels, device)
+            for img, label in zip(images, labels):
+                img = img.unsqueeze(0)
+                label = label.unsqueeze(0)
 
-#                 try:
-#                     out = model.unet(noisy_x, t, label)
-#                 except TypeError:
-#                     out = model.unet(noisy_x, t)
-#                 pred_noise = out.sample if hasattr(out, "sample") else out
+                t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
+                noise = torch.randn_like(img, device=device)
+                noisy_x = model.scheduler.add_noise(img, noise, t)
 
-#                 model.unet.zero_grad(set_to_none=True)
-#                 loss = F.mse_loss(pred_noise, noise)
-#                 loss.backward()
+                try:
+                    out = model.unet(noisy_x, t, label)
+                except TypeError:
+                    out = model.unet(noisy_x, t)
+                pred_noise = out.sample if hasattr(out, "sample") else out
 
-#                 grads = [p.grad.reshape(-1) for p in model.unet.parameters()
-#                          if p.requires_grad and p.grad is not None]
-#                 g = torch.cat(grads).to(dtype)
+                model.unet.zero_grad(set_to_none=True)
+                loss = F.mse_loss(pred_noise, noise)
+                loss.backward()
 
-#                 acc += g * (g @ u)
-#                 N += 1
+                grads = [p.grad.reshape(-1) for p in model.unet.parameters()
+                         if p.requires_grad and p.grad is not None]
+                g = torch.cat(grads).to(dtype)
 
-#                 model.unet.zero_grad(set_to_none=True)
+                # stochastic multi-vector power iteration step
+                proj = (U @ g)  # shape (k,)
+                acc += torch.outer(proj, g)  # accumulate g * (g^T U)
+                N += 1
 
-#                 if max_samples is not None and N >= max_samples:
-#                     break
-#             if max_samples is not None and N >= max_samples:
-#                 break
+                model.unet.zero_grad(set_to_none=True)
 
-#         if N > 0:
-#             u = acc / N
-#             norm = torch.norm(u)
-#             if norm < eps:
-#                 break
-#             u /= norm
+                if max_samples is not None and N >= max_samples:
+                    break
+            if max_samples is not None and N >= max_samples:
+                break
 
-#     # ---------------- FINAL PASS: Power + Rayleigh ----------------
-#     acc = torch.zeros_like(u, device=device, dtype=dtype)
-#     sum_proj2 = torch.zeros((), device=device, dtype=dtype)
-#     M = 0
-#     pbar = tqdm(loader, desc="[final pass] power + Rayleigh")
-#     for images, labels in pbar:
-#         images = _maybe_to(images, device)
-#         labels = _maybe_to(labels, device)
-#         for img, label in zip(images, labels):
-#             img = img.unsqueeze(0)
-#             label = label.unsqueeze(0)
+        if N == 0:
+            break
 
-#             t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
-#             noise = torch.randn_like(img, device=device)
-#             noisy_x = model.scheduler.add_noise(img, noise, t)
+        # Average and re-orthonormalize
+        U = acc / N
+        # orthonormalize using QR
+        U, _ = torch.linalg.qr(U.T, mode="reduced")
+        U = U.T
 
-#             try:
-#                 out = model.unet(noisy_x, t, label)
-#             except TypeError:
-#                 out = model.unet(noisy_x, t)
-#             pred_noise = out.sample if hasattr(out, "sample") else out
+    # ---------------- PASS 2: Rayleigh quotients ----------------
+    k = U.shape[0]
+    proj_sums = torch.zeros(k, device=device, dtype=dtype)
+    M = 0
 
-#             model.unet.zero_grad(set_to_none=True)
-#             loss = F.mse_loss(pred_noise, noise)
-#             loss.backward()
+    for images, labels in loader:
+        images = _maybe_to(images, device)
+        labels = _maybe_to(labels, device)
+        for img, label in zip(images, labels):
+            img = img.unsqueeze(0)
+            label = label.unsqueeze(0)
 
-#             grads = [p.grad.reshape(-1) for p in model.unet.parameters()
-#                      if p.requires_grad and p.grad is not None]
-#             g = torch.cat(grads).to(dtype)
+            t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
+            noise = torch.randn_like(img, device=device)
+            noisy_x = model.scheduler.add_noise(img, noise, t)
 
-#             # Power update contribution
-#             acc += g * (g @ u)
+            try:
+                out = model.unet(noisy_x, t, label)
+            except TypeError:
+                out = model.unet(noisy_x, t)
+            pred_noise = out.sample if hasattr(out, "sample") else out
 
-#             # Rayleigh quotient contribution
-#             s = g @ u
-#             sum_proj2 += s * s
-#             M += 1
+            model.unet.zero_grad(set_to_none=True)
+            loss = F.mse_loss(pred_noise, noise)
+            loss.backward()
 
-#             model.unet.zero_grad(set_to_none=True)
+            grads = [p.grad.reshape(-1) for p in model.unet.parameters()
+                     if p.requires_grad and p.grad is not None]
+            g = torch.cat(grads).to(dtype)
 
-#             if max_samples is not None and M >= max_samples:
-#                 break
-#         if max_samples is not None and M >= max_samples:
-#             break
+            proj = U @ g  # shape (k,)
+            proj_sums += proj * proj
+            M += 1
 
-#     # # Normalize eigenvector after final update
-#     # if M > 0:
-#     #     u = acc / M
-#     #     norm = torch.norm(u)
-#     #     if norm > eps:
-#     #         u /= norm
+            model.unet.zero_grad(set_to_none=True)
 
-#     u_max = u.clone()
-#     lambda_max = (sum_proj2 / max(M, 1)).item()
+            if max_samples is not None and M >= max_samples:
+                break
+        if max_samples is not None and M >= max_samples:
+            break
 
-#     return lambda_max, u_max
+    lambdas = (proj_sums / max(M, 1)).tolist()
+    # Return as (eigenvalues_list, tuple_of_eigenvector_rows) to match EWC expectations
+    # EWC expects mu to be a tuple when fisher_type == "top_eig"
+    U_tuple = tuple(U[i] for i in range(k))
+    return lambdas, U_tuple
+
+
+def compute_mas_importance(
+    model,
+    loader,
+    device: torch.device = torch.device("cuda"),
+    max_samples: int | None = None,
+    dtype: torch.dtype = torch.float64,
+):
+    """
+    Compute Memory Aware Synapses (MAS) importance scores.
+    
+    MAS computes parameter importance as the average gradient magnitude
+    of the L2 norm of the output with respect to each parameter:
+    Ω_i = E[|∂||f(x)||²/∂θ_i|]
+    
+    For diffusion models, we compute gradients of the prediction norm.
+
+    Args:
+        model: object with attributes `unet` and `scheduler`
+        loader: DataLoader yielding (images, labels)
+        device: computation device
+        max_samples: maximum number of samples to process (None = all)
+        dtype: data type for computation
+
+    Returns:
+        omega: tensor of shape (D,) containing importance scores for each parameter
+    """
+    model.eval()
+    model = model.to(device)
+
+    omega = None
+    N = 0
+
+    pbar = tqdm(loader, desc="Computing MAS importance")
+    for images, labels in pbar:
+        images = _maybe_to(images, device)
+        labels = _maybe_to(labels, device)
+
+        for img, label in zip(images, labels):
+            img = img.unsqueeze(0)
+            label = label.unsqueeze(0)
+
+            # Random timestep
+            t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
+            noise = torch.randn_like(img, device=device)
+            noisy_x = model.scheduler.add_noise(img, noise, t)
+
+            try:
+                out = model.unet(noisy_x, t, label)
+            except TypeError:
+                out = model.unet(noisy_x, t)
+            pred_noise = out.sample if hasattr(out, "sample") else out
+
+            model.unet.zero_grad(set_to_none=True)
+            
+            # MAS uses L2 norm of output as the objective
+            output_norm = torch.norm(pred_noise, p=2)
+            output_norm.backward()
+
+            # Accumulate absolute gradients
+            grads = [p.grad.abs().reshape(-1) for p in model.unet.parameters()
+                     if p.requires_grad and p.grad is not None]
+            g_abs = torch.cat(grads).to(dtype)
+
+            if omega is None:
+                omega = torch.zeros_like(g_abs, device=device, dtype=dtype)
+
+            omega += g_abs
+            N += 1
+
+            model.unet.zero_grad(set_to_none=True)
+
+            if max_samples is not None and N >= max_samples:
+                break
+        if max_samples is not None and N >= max_samples:
+            break
+
+    if omega is None or N == 0:
+        raise RuntimeError("Collected zero gradients. Check data/forward pass.")
+    
+    omega /= float(N)
+    return omega
+
+
+def compute_si_importance(
+    model,
+    loader,
+    device: torch.device = torch.device("cuda"),
+    max_samples: int | None = None,
+    dtype: torch.dtype = torch.float64,
+    damping: float = 0.1,
+):
+    """
+    Compute Synaptic Intelligence (SI) importance scores during training.
+    
+    SI tracks parameter importance based on the path integral of gradients
+    during training: Ω_i = Σ_t (g_t * Δθ_t) / (Δθ)² + damping
+    
+    For evaluation without actual training updates, we approximate this by
+    computing the expected gradient magnitude squared as a proxy for importance.
+
+    Args:
+        model: object with attributes `unet` and `scheduler`
+        loader: DataLoader yielding (images, labels)
+        device: computation device
+        max_samples: maximum number of samples to process (None = all)
+        dtype: data type for computation
+        damping: small constant to prevent division by zero
+
+    Returns:
+        omega: tensor of shape (D,) containing importance scores for each parameter
+    """
+    model.eval()
+    model = model.to(device)
+
+    # For SI approximation, we compute E[g²] as importance
+    omega = None
+    N = 0
+
+    pbar = tqdm(loader, desc="Computing SI importance")
+    for images, labels in pbar:
+        images = _maybe_to(images, device)
+        labels = _maybe_to(labels, device)
+
+        for img, label in zip(images, labels):
+            img = img.unsqueeze(0)
+            label = label.unsqueeze(0)
+
+            # Random timestep
+            t = torch.randint(0, 1000, (1,), device=device, dtype=torch.long)
+            noise = torch.randn_like(img, device=device)
+            noisy_x = model.scheduler.add_noise(img, noise, t)
+
+            try:
+                out = model.unet(noisy_x, t, label)
+            except TypeError:
+                out = model.unet(noisy_x, t)
+            pred_noise = out.sample if hasattr(out, "sample") else out
+
+            model.unet.zero_grad(set_to_none=True)
+            loss = F.mse_loss(pred_noise, noise)
+            loss.backward()
+
+            # Accumulate squared gradients
+            grads = [p.grad.reshape(-1) for p in model.unet.parameters()
+                     if p.requires_grad and p.grad is not None]
+            g = torch.cat(grads).to(dtype)
+            g_squared = g * g
+
+            if omega is None:
+                omega = torch.zeros_like(g_squared, device=device, dtype=dtype)
+
+            omega += g_squared
+            N += 1
+
+            model.unet.zero_grad(set_to_none=True)
+
+            if max_samples is not None and N >= max_samples:
+                break
+        if max_samples is not None and N >= max_samples:
+            break
+
+    if omega is None or N == 0:
+        raise RuntimeError("Collected zero gradients. Check data/forward pass.")
+    
+    omega /= float(N)
+    return omega

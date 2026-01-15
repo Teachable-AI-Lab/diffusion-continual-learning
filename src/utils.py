@@ -18,6 +18,56 @@ import os
 import json
 import argparse
 
+CHECKPOINT_SCHEDULE = [
+    (0, 10, 2),
+    (11, 100, 5),
+    (101, 1000, 50),
+    (1001, 10000, 1000),
+    (10001, 100000, 10000),
+]
+
+
+def _should_save_step(step: int) -> bool:
+    for start, end, interval in CHECKPOINT_SCHEDULE:
+        if start <= step < end:
+            return (step - start) % interval == 0
+    return False
+
+
+def _save_step_checkpoint(model, save_path, class_id, step, unique_labels, device, wandb):
+    out_dir = Path(save_path) / f"task_{class_id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ckpt_path = out_dir / f"model-step{step:06d}.pt"
+    torch.save(model.state_dict(), ckpt_path)
+
+    if not unique_labels:
+        return
+
+    # cols = 8
+    # all_tensors = []
+    # for c in sorted(unique_labels):
+    #     pils = model.sample(
+    #         batch_size=cols,
+    #         labels=[c] * cols,
+    #         num_inference_steps=50,
+    #         device=device,
+    #         guidance_scale=0.0,
+    #     )
+    #     for im in pils:
+    #         all_tensors.append((im + 1.0) * 0.5)
+
+    # if not all_tensors:
+    #     return
+
+    # grid = make_grid(torch.stack(all_tensors, dim=0), nrow=cols, padding=2)
+    # grid_pil = TF.to_pil_image(grid.clamp(0, 1))
+    # if wandb is not None:
+    #     wandb.log({f"samples/task{class_id}": wandb.Image(grid_pil, caption=f"Task {class_id} Step {step}")})
+    # out_file = out_dir / f"step_{step:06d}_grid.png"
+    # grid_pil.save(out_file)
+
+
 def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False, group_size=2, n_classes=10):
     if name.lower() == 'mnist':
         transform = transforms.Compose([transforms.ToTensor()])
@@ -254,6 +304,75 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
         train_dataset = HFImageNet64(train_hf, transform, effective_num_classes)
         test_dataset  = HFImageNet64(test_hf,  transform, effective_num_classes)
         
+    elif name.lower() == 'tinyimagenet':
+        from datasets import load_dataset
+
+        hf_repo = "zh-plus/tiny-imagenet"
+        cache_dir = '/storage/home/hcoda1/1/agupta886/scratch/tinyimagenet'
+        train_hf = load_dataset(hf_repo, split="train", cache_dir=cache_dir)
+        test_hf = load_dataset(hf_repo, split="valid", cache_dir=cache_dir)
+        
+        valid_labels = sorted(l for l in train_hf.unique('label') if int(l) >= 0)
+        total_classes = len(valid_labels)
+        assert total_classes == 200, "Expected 200 TinyImageNet classes."
+        # if n_classes is not None and n_classes < total_classes:
+        #     chosen_labels = sorted(random.sample(valid_labels, n_classes))
+        #     chosen_set = set(chosen_labels)
+        #     label_map = {old: new for new, old in enumerate(chosen_labels)}
+
+        #     def keep_subset(example):
+        #         return example['label'] in chosen_set
+
+        #     def remap_label(example):
+        #         example['label'] = label_map[int(example['label'])]
+        #         return example
+
+        #     train_hf = train_hf.filter(keep_subset)
+        #     test_hf = test_hf.filter(keep_subset)
+        #     train_hf = train_hf.map(remap_label)
+        #     test_hf = test_hf.map(remap_label)
+        #     effective_num_classes = n_classes
+        # else:
+        #     effective_num_classes = total_classes
+        effective_num_classes = total_classes
+        
+        if greyscale:
+            transform = transforms.Compose([
+                transforms.Resize((64, 64)),
+                transforms.Grayscale(num_output_channels=1),
+                transforms.ToTensor(),
+            ])
+            if normalize:
+                transform.transforms.append(transforms.Normalize((0.5,), (0.5,)))
+        else:
+            transform = transforms.Compose([
+                transforms.Resize((64, 64)),
+                transforms.Lambda(lambda im: im.convert('RGB')),
+                transforms.ToTensor(),
+            ])
+            if normalize:
+                transform.transforms.append(
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                )
+
+        class HFTinyImageNet(torch.utils.data.Dataset):
+            def __init__(self, hf_ds, transform, num_classes):
+                self.ds = hf_ds
+                self.transform = transform
+                self.num_classes = num_classes
+
+            def __len__(self):
+                return len(self.ds)
+
+            def __getitem__(self, idx):
+                rec = self.ds[int(idx)]  # dataset[idx]["image"] lazily decodes a single file
+                img = rec["image"]
+                label = int(rec.get("label", -1))
+                return self.transform(img), label
+
+        n_classes = effective_num_classes
+        train_dataset = HFTinyImageNet(train_hf, transform, n_classes)
+        test_dataset = HFTinyImageNet(test_hf, transform, n_classes)
     else:
         train_dataset = None
         test_dataset = None
@@ -337,6 +456,9 @@ def train_one_task(model, train_loader, class_id, optimizer,
                    kl=False,
                    num_epochs=10, save_path=None, device='cuda', wandb=None):
     unique_labels = set()
+    global_step = 0
+    if save_path is not None and _should_save_step(global_step):
+        _save_step_checkpoint(model, save_path, class_id, global_step, unique_labels, device, wandb)
     for epoch in tqdm(range(num_epochs)):
         for batch in tqdm(train_loader):
             images, labels = batch
@@ -398,6 +520,10 @@ def train_one_task(model, train_loader, class_id, optimizer,
 
             loss.backward()
             optimizer.step()
+            global_step += 1
+
+            if save_path is not None and _should_save_step(global_step):
+                _save_step_checkpoint(model, save_path, class_id, global_step, unique_labels, device, wandb)
 
         if wandb is not None:
             wandb.log({
@@ -409,35 +535,6 @@ def train_one_task(model, train_loader, class_id, optimizer,
             })
 
 
-        # visualize every 50 epochs
-        if save_path is not None and epoch % 50 == 0:
-            # sample 8 images for each label from 0 to 9
-            out_dir = Path(save_path) / f"task_{class_id}" / f"epoch_{epoch:05d}"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            # num_classes = model.num_class_labels
-            # rows = model.num_class_labels
-            # only want to visualize the current task's classes
-            # rows
-            cols = 8
-            all_tensors = []
-            for c in unique_labels:
-                pils = model.sample(
-                    batch_size=cols,
-                    labels=[c] * cols,
-                    num_inference_steps=50,
-                    device=device,
-                    guidance_scale=0.0,  # pure conditional
-                )
-                for im in pils:
-                    # to [C,H,W] float in [0,1]
-                    all_tensors.append((im + 1.0) * 0.5)  # [0,1] float
-
-            grid = make_grid(torch.stack(all_tensors, dim=0), nrow=cols, padding=2)  # 8 per row
-            grid_pil = TF.to_pil_image(grid.clamp(0, 1)) # is grid_pil a PIL image? Yes, it is.
-            if wandb is not None:
-                wandb.log({f"samples/task{class_id}": wandb.Image(grid_pil, caption=f"Task {class_id} Epoch {epoch}")})
-            out_file = out_dir / f"epoch_{epoch:05d}_grid.png"
-            grid_pil.save(out_file)
 
     # return {
     #     "ddim_loss": ddim_loss.item(),

@@ -1,0 +1,5 @@
+dataset,final_fid,avg_forgetting
+cifar10,115.410,72.496
+fmnist,103.955,88.009
+imagenet32,265.902,67.864
+mnist,102.642,93.7

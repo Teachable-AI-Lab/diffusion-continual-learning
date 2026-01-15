@@ -165,9 +165,15 @@ for task_id in all_task_ids:
     # adding continual learning components
     if args.use_ewc:
         if args.ewc_fisher_type == "top_eig":
-            c, mu = compute_top_eigenpair_two_pass(
-                model, train_loader, device=device, max_samples=10000, power_iters=args.power_iters
-            )
+            k_eigenpairs = getattr(args, 'k_eigenpairs', 1)  # default to 1 if not specified
+            if k_eigenpairs == 1:
+                c, mu = compute_top_eigenpair_two_pass(
+                    model, train_loader, device=device, max_samples=10000, power_iters=args.power_iters
+                )
+            else:
+                c, mu = compute_topk_eigenpairs_two_pass(
+                    model, train_loader, device=device, k=k_eigenpairs, max_samples=10000, power_iters=args.power_iters
+                )
             diag = None
         elif args.ewc_fisher_type == "diag":
             c, mu, diag = compute_rank1_coeff_and_mean(
@@ -179,13 +185,22 @@ for task_id in all_task_ids:
                 model, train_loader, device=device, max_samples=10000
             )
             diag = None
+        elif args.ewc_fisher_type == "mas":
+            # MAS uses diagonal importance based on output gradient magnitude
+            diag = compute_mas_importance(
+                model, train_loader, device=device, max_samples=10000
+            )
+            c, mu = None, None
+        elif args.ewc_fisher_type == "si":
+            # SI uses diagonal importance based on squared gradients
+            diag = compute_si_importance(
+                model, train_loader, device=device, max_samples=10000
+            )
+            c, mu = None, None
 
         if ewc is None:
             # create a new EWC object
-            fisher_type = args.ewc_fisher_type
-            # c, mu, diag = compute_rank1_coeff_and_mean(
-            #     model, train_loader, device=device, max_samples=10000
-            # )
+            fisher_type = args.ewc_fisher_type if args.ewc_fisher_type not in ["mas", "si"] else "diag"
             # save the fisher information too
             torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
 
@@ -193,9 +208,6 @@ for task_id in all_task_ids:
             ewc = EWC(frozen_model, fisher_type, c=c, mu=mu, diag=diag)
         else:
             # add a new task to the existing EWC object
-            # c, mu, diag = compute_rank1_coeff_and_mean(
-            #     model, train_loader, device=device, max_samples=10000
-            # )
             # save the fisher information too
             torch.save((c, mu, diag), ROOT / exp_path / f"fisher-task{task_id}.pt")
 
