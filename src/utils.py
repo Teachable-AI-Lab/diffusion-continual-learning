@@ -252,7 +252,8 @@ def get_cl_dataset(name='mnist', batch_size=64, normalize=True, greyscale=False,
             # Sample a subset ONCE and reuse for both splits
             # (set a fixed seed here for deterministic subsets)
             # random.seed(0)
-            chosen_labels = sorted(random.sample(all_train_labels, n_classes))
+            # chosen_labels = sorted(random.sample(all_train_labels, n_classes))
+            chosen_labels = list(range(n_classes))
             chosen_set = set(chosen_labels)
 
             # Build a compact label map  old_label -> new_label in [0, n_classes-1]
