@@ -92,12 +92,25 @@ def main() -> None:
     args = utils.load_config_from_json(cli_args.config)
 
     use_wandb = getattr(args, "use_wandb", False)
+    print("Configuration loaded successfully:")
+    print("-" * 30)
+    # Print all loaded args and their types
+    for key, value in sorted(vars(args).items()): # Sort for consistent output
+        print(f"{key} ({type(value).__name__}): {value}")
+    print("-" * 30)
     if use_wandb:
+        # wandb.init(
+        #     project=getattr(args, "wandb_project", "diffusion-continual-learning"),
+        #     name=getattr(args, "wandb_run_name", "online-maml"),
+        #     config=vars(args),
+        #     dir=getattr(args, "output_dir", "./outputs"),
+        #     # mode="offline",
+        # )
         wandb.init(
-            project=getattr(args, "wandb_project", "diffusion-continual-learning"),
-            name=getattr(args, "wandb_run_name", "online-maml"),
-            config=vars(args),
-            dir=getattr(args, "output_dir", "./outputs"),
+        project=args.wandb_project,
+        name=args.wandb_run_name,
+        config=vars(args),
+        dir=args.output_dir,
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -261,6 +274,10 @@ def main() -> None:
             num_inference_steps=fid_steps,
         )
         avg_fid = float(np.mean(list(fid_scores.values())))
+        ##print all fid scores
+        for eval_task, fid in fid_scores.items():
+            print(f"FID for task {eval_task}: {fid:.4f}")
+        print(f"Average FID up to task {task_id}: {avg_fid:.4f}")
         history.append(
             {
                 "task_id": task_id,
