@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 import stat
 import subprocess
@@ -89,13 +90,13 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint-skip-ids",
         type=str,
         nargs="+",
-        default=["000000", "000011", "006001", "008001", "020000", "040001"],
+        default=["000000", "000011", "006001", "008001", "020000", "050001"],
         help="Step ids that should never be scheduled (integers, leading zeros allowed).",
     )
     parser.add_argument(
         "--gpu-types",
         nargs="+",
-        default=["a100", "L40s", "h100", "h200"],
+        default=["a100", "L40s", "h200"],
         help="GPU types to round-robin across when emitting #SBATCH --gpus lines.",
     )
     parser.add_argument(
@@ -220,8 +221,12 @@ def _extract_checkpoint_meta(path: Path) -> tuple[str, int | None]:
     return path.stem, None
 
 
-def collect_checkpoint_steps(run_dir: Path, task_filter: set[int] | None) -> list[tuple[str, int | None, Path]]:
-    step_map: dict[str, tuple[str, int | None, Path]] = {}
+def collect_checkpoint_steps(
+    run_dir: Path, task_filter: set[int] | None
+) -> list[tuple[str, int | None, dict[int, Path]]]:
+    """Group checkpoint files by their step id across all task directories."""
+
+    step_map: dict[str, tuple[str, int | None, dict[int, Path]]] = {}
     for task_id, task_dir in iter_task_dirs(run_dir):
         if task_filter is not None and task_id not in task_filter:
             continue
@@ -230,9 +235,10 @@ def collect_checkpoint_steps(run_dir: Path, task_filter: set[int] | None) -> lis
             if step_idx is not None and step_idx == 0:
                 continue
             key = f"{step_idx:06d}" if step_idx is not None else label
-            if key in step_map:
-                continue
-            step_map[key] = (label, step_idx, path)
+            if key not in step_map:
+                step_map[key] = (label, step_idx, {})
+            step_map[key][2][task_id] = path
+
     entries = list(step_map.values())
     entries.sort(key=lambda item: (item[1] is None, item[1] if item[1] is not None else item[0]))
     return entries
@@ -252,17 +258,49 @@ def csv_has_required_tasks(path: Path, expected_task_ids: list[int]) -> bool:
     try:
         with path.open("r", newline="") as handle:
             reader = csv.DictReader(handle)
-            row = next(reader, None)
+            rows = list(reader)
+            header = reader.fieldnames
     except Exception as exc:
         print(f"[warn] Failed to read {path}: {exc}")
         return False
-    if row is None:
+
+    if not rows:
         return False
+
+    if not header or "trained_task" not in header:
+        return False
+
+    if expected_task_ids:
+        max_eval_needed = max(expected_task_ids)
+        for column in (f"task{i}" for i in range(max_eval_needed + 1)):
+            if column not in header:
+                return False
+
+    coverage: dict[int, dict[int, str]] = {}
+    for row in rows:
+        raw_id = row.get("trained_task")
+        if raw_id is None:
+            continue
+        try:
+            trained_task = int(str(raw_id).strip())
+        except ValueError:
+            # Accept values like "task3" by stripping prefix
+            match = re.search(r"(\d+)$", str(raw_id))
+            if not match:
+                continue
+            trained_task = int(match.group(1))
+        coverage[trained_task] = row
+
     for task_id in expected_task_ids:
-        key = f"task{task_id}"
-        val = row.get(key)
-        if val is None or not str(val).strip():
+        row = coverage.get(task_id)
+        if row is None:
             return False
+        limit = task_id
+        for eval_id in range(limit + 1):
+            key = f"task{eval_id}"
+            val = row.get(key)
+            if val is None or not str(val).strip():
+                return False
     return True
 
 
@@ -274,8 +312,8 @@ def build_sbatch_body(
     models_root: Path,
     tables_dir: Path,
     run_name: str,
-    ckpt_path: Path,
     label: str,
+    manifest_path: Path | None,
     csv_path: Path,
     num_inference_steps: int,
     seed: int,
@@ -286,10 +324,11 @@ def build_sbatch_body(
         f"srun python {config.python_script} \\",
         f'''    --models_root "{models_root}" \\''',
         f'''    --tables_dir "{tables_dir}" \\''',
-        f'''    --checkpoint-path "{ckpt_path}" \\''',
         f'''    --checkpoint-label "{label}" \\''',
         f'''    --per-checkpoint-output "{csv_path}" \\''',
     ]
+    if manifest_path is not None:
+        cmd_lines.append(f'    --task-checkpoint-manifest "{manifest_path}" \\')
     if max_real is not None:
         cmd_lines.append(f"    --max_real {max_real} \\")
     if num_eval_tasks is not None:
@@ -326,15 +365,16 @@ echo "Finished checkpoint {label} for {run_name} at $(date)"
 def summarize_job_script(
     job_name: str,
     gpu_type: str,
-    ckpt_path: Path,
     label: str,
     csv_path: Path,
     expected_tasks: list[int],
+    task_ids: list[int],
 ) -> str:
     task_list = ",".join(str(t) for t in expected_tasks) if expected_tasks else "<none>"
+    used_tasks = ",".join(str(t) for t in task_ids) if task_ids else "<none>"
     return (
-        f"Job {job_name}: checkpoint={ckpt_path.name}, label={label}, gpu={gpu_type}, "
-        f"csv={csv_path.name}, eval_tasks=[{task_list}]"
+        f"Job {job_name}: label={label}, gpu={gpu_type}, csv={csv_path.name}, "
+        f"expected_tasks=[{task_list}], task_checkpoints=[{used_tasks}]"
     )
 
 
@@ -349,10 +389,12 @@ def determine_job_time(gpu_type: str, default: str) -> str:
     """
     g = (gpu_type or "").lower()
     if "h200" in g:
-        return "0:30:00"
+        return "0:45:00"
     if "h100" in g:
         return "0:45:00"
-    if "a100" in g or "l40" in g:
+    if "a100" in g:
+        return "1:00:00"
+    if "l40" in g:
         return "1:30:00"
     return default
 
@@ -360,6 +402,10 @@ def determine_job_time(gpu_type: str, default: str) -> str:
 def write_job_script(path: Path, content: str) -> None:
     path.write_text(content)
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+def write_checkpoint_manifest(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def submit_job(script_path: Path) -> None:
@@ -381,6 +427,8 @@ def main() -> None:
     output_dir = args.output_dir.expanduser() if args.output_dir else tables_dir / "slurm_outputs"
     error_dir = args.error_dir.expanduser() if args.error_dir else tables_dir / "slurm_errors"
     generated_dir = args.generated_dir.expanduser()
+    if not generated_dir.is_absolute():
+        generated_dir = (Path.cwd() / generated_dir).resolve()
 
     slurm_cfg = SlurmConfig(
         job_time=args.job_time,
@@ -424,7 +472,10 @@ def main() -> None:
 
     task_filter = set(args.task_ids) if args.task_ids else None
     skip_step_ids = parse_skip_ids(args.checkpoint_skip_ids)
-    expected_task_ids = list(range(args.expected_num_tasks)) if args.expected_num_tasks > 0 else []
+    if task_filter:
+        expected_task_ids = sorted(task_filter)
+    else:
+        expected_task_ids = list(range(args.expected_num_tasks)) if args.expected_num_tasks > 0 else []
     planned = 0
 
     for run_dir in run_dirs:
@@ -440,9 +491,22 @@ def main() -> None:
         if args.max_checkpoints is not None:
             checkpoint_steps = checkpoint_steps[: args.max_checkpoints]
 
-        for label, step_idx, ckpt_path in checkpoint_steps:
+        for label, step_idx, task_paths in checkpoint_steps:
             if step_idx is not None and step_idx in skip_step_ids:
                 continue
+
+            if not task_paths:
+                continue
+
+            task_ids = sorted(task_paths.keys())
+            missing_tasks: list[int] = []
+            if expected_task_ids:
+                missing_tasks = [task_id for task_id in expected_task_ids if task_id not in task_paths]
+                if missing_tasks:
+                    print(
+                        f"[skip] {run_name} checkpoint {label} missing task checkpoints {missing_tasks}; skipping."
+                    )
+                    continue
 
             csv_name = f"{sanitize(label)}.csv"
             csv_path = run_tables_dir / csv_name
@@ -461,15 +525,25 @@ def main() -> None:
             script_path = slurm_cfg.generated_dir / f"{job_name}.sbatch"
             planned += 1
 
+            manifest_path = slurm_cfg.generated_dir / f"{job_name}_tasks.json"
+            manifest_payload = {
+                "checkpoint_label": label,
+                "run_name": run_name,
+                "task_checkpoints": [
+                    {"task_id": task_id, "path": str(task_paths[task_id])} for task_id in task_ids
+                ],
+                "expected_task_ids": expected_task_ids,
+            }
+
             if args.dry_run:
                 print(
                     summarize_job_script(
                         job_name,
                         gpu_type,
-                        ckpt_path,
                         label,
                         csv_path,
                         expected_task_ids,
+                        task_ids,
                     )
                 )
                 continue
@@ -484,23 +558,24 @@ def main() -> None:
                 models_root,
                 tables_dir,
                 run_name,
-                ckpt_path,
                 label,
+                manifest_path,
                 csv_path,
                 args.num_inference_steps,
                 args.seed,
                 args.max_real,
                 args.expected_num_tasks if args.expected_num_tasks > 0 else None,
             )
+            write_checkpoint_manifest(manifest_path, manifest_payload)
             write_job_script(script_path, script_body)
             print(
                 summarize_job_script(
                     job_name,
                     gpu_type,
-                    ckpt_path,
                     label,
                     csv_path,
                     expected_task_ids,
+                    task_ids,
                 )
             )
 

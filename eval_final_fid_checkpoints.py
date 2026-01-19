@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import re
 from pathlib import Path
 
@@ -79,7 +80,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--num_workers",
 		type=int,
-		default=8,
+		default=4,
 		help="DataLoader workers.",
 	)
 	parser.add_argument(
@@ -141,6 +142,12 @@ def parse_args() -> argparse.Namespace:
 		type=Path,
 		default=None,
 		help="CSV path for single checkpoint mode (default: tables_dir/<checkpoint>.csv).",
+	)
+	parser.add_argument(
+		"--task-checkpoint-manifest",
+		type=Path,
+		default=None,
+		help="JSON manifest describing per-task checkpoints for a single intermediate step.",
 	)
 	parser.add_argument(
 		"--previous-only",
@@ -370,6 +377,146 @@ def build_checkpoint_rows(
 	return rows
 
 
+def parse_task_checkpoint_manifest(manifest_path: Path) -> dict:
+	try:
+		payload = json.loads(manifest_path.read_text())
+	except Exception as exc:
+		raise SystemExit(f"Failed to parse manifest {manifest_path}: {exc}") from exc
+
+	task_entries_raw = payload.get("task_checkpoints")
+	if not task_entries_raw:
+		raise SystemExit(f"Manifest {manifest_path} missing 'task_checkpoints' entries.")
+
+	entries: list[tuple[int, Path]] = []
+	for entry in task_entries_raw:
+		if not isinstance(entry, dict):
+			continue
+		if "task_id" not in entry or "path" not in entry:
+			continue
+		try:
+			task_id = int(entry["task_id"])
+		except (TypeError, ValueError):
+			continue
+		ckpt_path = Path(entry["path"]).expanduser()
+		entries.append((task_id, ckpt_path))
+
+	if not entries:
+		raise SystemExit(f"Manifest {manifest_path} did not contain valid task checkpoints.")
+
+	entries.sort(key=lambda item: item[0])
+	expected_ids_raw = payload.get("expected_task_ids")
+	if expected_ids_raw is not None:
+		try:
+			expected_task_ids = sorted(int(val) for val in expected_ids_raw)
+		except (TypeError, ValueError):
+			expected_task_ids = None
+	else:
+		expected_task_ids = None
+
+	return {
+		"label": payload.get("checkpoint_label"),
+		"run_name": payload.get("run_name"),
+		"task_entries": entries,
+		"expected_task_ids": expected_task_ids,
+	}
+
+
+def evaluate_manifest_checkpoint_matrix(
+	cli_args: argparse.Namespace,
+	manifest_path: Path,
+	tables_dir: Path,
+	cl_test_loader: list[DataLoader],
+	device,
+	channels: int,
+	im_size: int,
+	task_filter: set[int] | None,
+) -> None:
+	manifest_info = parse_task_checkpoint_manifest(manifest_path)
+	manifest_label = manifest_info.get("label")
+	label = cli_args.checkpoint_label or manifest_label or manifest_path.stem
+	all_task_entries: list[tuple[int, Path]] = manifest_info["task_entries"]
+	if task_filter is not None:
+		selected_ids = set(task_filter)
+		task_entries = [entry for entry in all_task_entries if entry[0] in selected_ids]
+		if not task_entries:
+			print(
+				f"No task checkpoints from {manifest_path} matched filters {sorted(selected_ids)}; skipping."
+			)
+			return
+	else:
+		task_entries = all_task_entries
+
+	available_task_ids = [task_id for task_id, _ in task_entries]
+	expected_task_ids = manifest_info.get("expected_task_ids")
+	if expected_task_ids:
+		expected_task_ids = [task_id for task_id in expected_task_ids if task_id in available_task_ids]
+	else:
+		expected_task_ids = available_task_ids
+
+	output_path = (
+		cli_args.per_checkpoint_output.expanduser()
+		if cli_args.per_checkpoint_output
+		else tables_dir / f"{label}.csv"
+	)
+
+	model = build_conditional_ddim(
+		in_channel=channels,
+		image_size=im_size,
+		num_class_labels=cli_args.num_classes,
+		ewc_lambda=0.0,
+		gr_kl=0.0,
+	).to(device)
+
+	per_task_fids: dict[int, dict[int, float]] = {}
+	max_eval_seen = -1
+	for task_id, ckpt_path in task_entries:
+		if not ckpt_path.is_file():
+			raise SystemExit(f"Checkpoint not found for task {task_id}: {ckpt_path}")
+		print(f"[checkpoint] Task {task_id}: evaluating {ckpt_path}")
+		state = torch.load(ckpt_path, map_location=device)
+		model.load_state_dict(state)
+		eval_task_ids = build_eval_task_ids(task_id, len(cl_test_loader), cli_args.previous_only)
+		task_results: dict[int, float] = {}
+		for eval_task_id in eval_task_ids:
+			fid = evaluate_fid(
+				model,
+				cl_test_loader[eval_task_id],
+				device,
+				num_inference_steps=cli_args.num_inference_steps,
+				seed=cli_args.seed,
+				max_real=cli_args.max_real,
+			)
+			task_results[eval_task_id] = fid
+			print(f"    Task {task_id} vs Task {eval_task_id}: FID {fid:.3f}")
+		if task_results:
+			max_eval_seen = max(max_eval_seen, max(task_results.keys()))
+		per_task_fids[task_id] = task_results
+
+	if not per_task_fids:
+		print(f"No checkpoint rows were evaluated for manifest {manifest_path}; nothing to write.")
+		return
+
+	if expected_task_ids:
+		row_order = expected_task_ids
+		max_eval = max(expected_task_ids)
+	else:
+		row_order = sorted(per_task_fids.keys())
+		max_eval = max_eval_seen if max_eval_seen >= 0 else max(row_order)
+
+	fieldnames = ["trained_task"] + [f"task{i}" for i in range(max_eval + 1)]
+	rows: list[dict[str, str]] = []
+	for task_id in row_order:
+		results = per_task_fids.get(task_id, {})
+		row: dict[str, str] = {"trained_task": task_id}
+		for eval_task in range(max_eval + 1):
+			val = results.get(eval_task)
+			row[f"task{eval_task}"] = f"{val:.6f}" if val is not None else ""
+		rows.append(row)
+
+	write_csv(output_path, fieldnames, rows)
+	print(f"Wrote checkpoint matrix: {output_path}")
+
+
 def main() -> None:
 	cli_args = parse_args()
 
@@ -400,6 +547,29 @@ def main() -> None:
 	im_size = sample_x.shape[1]
 	channels = sample_x.shape[0]
 	print("Image shape:", sample_x.shape)
+
+	task_filter: set[int] | None = None
+	if cli_args.task_ids:
+		task_filter = set(cli_args.task_ids)
+	elif cli_args.task_id is not None:
+		task_filter = {cli_args.task_id}
+
+	manifest_arg = cli_args.task_checkpoint_manifest
+	if manifest_arg:
+		manifest_path = manifest_arg.expanduser()
+		if not manifest_path.is_file():
+			raise SystemExit(f"Manifest not found: {manifest_path}")
+		evaluate_manifest_checkpoint_matrix(
+			cli_args,
+			manifest_path,
+			tables_dir,
+			cl_test_loader,
+			device,
+			channels,
+			im_size,
+			task_filter,
+		)
+		return
 
 	single_checkpoint = cli_args.checkpoint_path
 	if single_checkpoint:
@@ -499,12 +669,6 @@ def main() -> None:
 		raise SystemExit(
 			"No model subfolders found. Check --model-dirs, --models_root, or --run_name."
 		)
-
-	task_filter: set[int] | None = None
-	if cli_args.task_ids:
-		task_filter = set(cli_args.task_ids)
-	elif cli_args.task_id is not None:
-		task_filter = {cli_args.task_id}
 
 	summary_entries: list[tuple[str, dict[int, float]]] = []
 
