@@ -120,7 +120,7 @@ for task_id in all_task_ids:
     print(f"Training on task {task_id}...")
     # if args.use_wandb:
         # wandb.log({"task_id": task_id})
-    exp_path = f"{args.dataset}-{args.ewc_fisher_type}{'-gr' if args.use_generative_replay else ''}{'-distil' if args.use_distillation else ''}-{args.seed}"
+    exp_path = args.wandb_run_name
     train_loader = cl_train_loader[task_id]
     utils.train_one_task(model, train_loader, task_id, optimizer, 
                      ewc, 
@@ -129,7 +129,7 @@ for task_id in all_task_ids:
                      args.epochs,
                      ROOT / exp_path,
                     #  None,
-                     device, wandb)
+                     device, True if args.use_wandb else None)
     # save model after each task
     model_path = ROOT / exp_path / f"model-task{task_id}.pt"
     model_path.parent.mkdir(parents=True, exist_ok=True)

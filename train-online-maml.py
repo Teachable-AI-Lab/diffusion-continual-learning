@@ -148,9 +148,9 @@ def main() -> None:
         ewc_lambda=0.0,
         gr_kl=0.0,
     ).to(device)
-    outer_optimizer = optim.Adam(model.parameters(), lr=getattr(args, "lr", 2e-4))
+    
 
-    inner_lr = getattr(args, "omaml_inner_lr", 1e-4)
+    inner_lr = getattr(args, "omaml_inner_lr", 2e-4)
     support_batches = getattr(args, "omaml_support_batches", 1)
     query_batches = getattr(args, "omaml_query_batches", 1)
     task_epochs = getattr(args, "omaml_epochs_per_task", 100)
@@ -172,20 +172,11 @@ def main() -> None:
 
     for task_id in sorted(cl_train_loaders.keys()):
         print(f"=== Task {task_id} / {len(cl_train_loaders)} ===")
+        outer_optimizer = optim.Adam(model.parameters(), lr=getattr(args, "lr", 2e-4))
         task_loader = cl_train_loaders[task_id]
         task_meta_losses: List[float] = []
         unique_labels: Set[int] = set()
         global_meta_updates = 0
-        # if utils._should_save_step(global_meta_updates):
-        #     utils._save_step_checkpoint(
-        #         model,
-        #         meta_ckpt_dir,
-        #         task_id,
-        #         global_meta_updates,
-        #         unique_labels,
-        #         device,
-        #         wandb if use_wandb else None,
-        #     )
         task_gr = gr if use_generative_replay else None
         for epoch in range(task_epochs):
             print(f"Task {task_id} epoch {epoch + 1}/{task_epochs}")
