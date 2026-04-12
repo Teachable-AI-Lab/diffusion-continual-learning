@@ -160,6 +160,11 @@ def parse_args() -> argparse.Namespace:
 		default=None,
 		help="Override the number of tasks (0-indexed) to evaluate for each checkpoint (default: all available).",
 	)
+	parser.add_argument(
+		"--force-recompute",
+		action="store_true",
+		help="Ignore existing CSV progress and recompute all requested entries from scratch.",
+	)
 	return parser.parse_args()
 
 
@@ -328,6 +333,147 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
 		writer.writerows(rows)
 
 
+def read_task_matrix_csv(path: Path) -> dict[int, dict[int, float]]:
+	data: dict[int, dict[int, float]] = {}
+	if not path.exists():
+		return data
+	try:
+		with path.open("r", newline="") as handle:
+			reader = csv.DictReader(handle)
+			for row in reader:
+				raw_id = row.get("trained_task")
+				if raw_id is None:
+					continue
+				task_str = str(raw_id).strip()
+				if not task_str:
+					continue
+				try:
+					task_id = int(task_str)
+				except ValueError:
+					match = re.search(r"(\d+)$", task_str)
+					if not match:
+						continue
+					task_id = int(match.group(1))
+				results: dict[int, float] = {}
+				for key, value in row.items():
+					if key == "trained_task" or value is None:
+						continue
+					key_str = str(key).strip()
+					val_str = str(value).strip()
+					if not val_str:
+						continue
+					if key_str.startswith("task"):
+						index_part = key_str[4:]
+					elif key_str.isdigit():
+						index_part = key_str
+					else:
+						continue
+					try:
+						idx = int(index_part)
+						results[idx] = float(val_str)
+					except ValueError:
+						continue
+				data[task_id] = results
+	except Exception as exc:
+		print(f"[warn] Failed to read CSV {path}: {exc}")
+	return data
+
+
+def write_task_matrix_csv(
+	path: Path,
+	task_map: dict[int, dict[int, float]],
+	column_prefix: str,
+	row_order: list[int] | None = None,
+	max_eval_override: int | None = None,
+) -> None:
+	path.parent.mkdir(parents=True, exist_ok=True)
+	if row_order is None:
+		row_order = sorted(task_map.keys())
+	else:
+		seen = set(row_order)
+		for task_id in sorted(task_map.keys()):
+			if task_id not in seen:
+				row_order.append(task_id)
+	if not row_order and task_map:
+		row_order = sorted(task_map.keys())
+	max_eval = -1
+	for results in task_map.values():
+		if results:
+			max_eval = max(max_eval, max(results.keys()))
+	if max_eval_override is not None:
+		max_eval = max(max_eval, max_eval_override)
+	fieldnames = ["trained_task"]
+	if max_eval >= 0:
+		eval_cols = [
+			f"{column_prefix}{i}" if column_prefix else str(i)
+			for i in range(max_eval + 1)
+		]
+		fieldnames.extend(eval_cols)
+	rows: list[dict[str, str | int]] = []
+	for task_id in row_order:
+		row: dict[str, str | int] = {"trained_task": task_id}
+		results = task_map.get(task_id, {})
+		if max_eval >= 0:
+			for eval_idx in range(max_eval + 1):
+				key = f"{column_prefix}{eval_idx}" if column_prefix else str(eval_idx)
+				val = results.get(eval_idx)
+				row[key] = f"{val:.6f}" if val is not None else ""
+		rows.append(row)
+	write_csv(path, fieldnames, rows)
+
+
+def read_checkpoint_table(path: Path) -> tuple[dict[str, dict[int, float]], list[str]]:
+	rows: dict[str, dict[int, float]] = {}
+	order: list[str] = []
+	if not path.exists():
+		return rows, order
+	try:
+		with path.open("r", newline="") as handle:
+			reader = csv.DictReader(handle)
+			for row in reader:
+				label = row.get("checkpoint")
+				if label is None:
+					continue
+				label = str(label).strip()
+				if not label:
+					continue
+				order.append(label)
+				entry: dict[int, float] = {}
+				for key, value in row.items():
+					if key is None or not key.startswith("task"):
+						continue
+					val_str = str(value).strip()
+					if not val_str:
+						continue
+					try:
+						idx = int(key[4:])
+						entry[idx] = float(val_str)
+					except ValueError:
+						continue
+				rows[label] = entry
+	except Exception as exc:
+		print(f"[warn] Failed to read checkpoint CSV {path}: {exc}")
+	return rows, order
+
+
+def write_checkpoint_table(
+	path: Path,
+	entries: dict[str, dict[int, float]],
+	row_order: list[str],
+	eval_task_ids: list[int],
+) -> None:
+	fieldnames = ["checkpoint"] + [f"task{i}" for i in eval_task_ids]
+	rows: list[dict[str, str]] = []
+	for label in row_order:
+		row_data = entries.get(label, {})
+		row: dict[str, str] = {"checkpoint": label}
+		for eval_task_id in eval_task_ids:
+			val = row_data.get(eval_task_id)
+			row[f"task{eval_task_id}"] = f"{val:.6f}" if val is not None else ""
+		rows.append(row)
+	write_csv(path, fieldnames, rows)
+
+
 def evaluate_fid(
 	model,
 	test_loader,
@@ -355,14 +501,27 @@ def build_checkpoint_rows(
 	num_inference_steps: int,
 	seed: int,
 	max_real: int | None,
-) -> list[dict[str, str]]:
-	rows: list[dict[str, str]] = []
+	output_path: Path,
+	force_recompute: bool,
+) -> bool:
+	if force_recompute:
+		row_map: dict[str, dict[int, float]] = {}
+		row_order: list[str] = []
+	else:
+		row_map, row_order = read_checkpoint_table(output_path)
+	updated = False
 	for label, ckpt_path in checkpoint_entries:
-		print(f"    [ckpt] Loading {ckpt_path.name}")
+		existing = {} if force_recompute else dict(row_map.get(label, {}))
+		missing_eval_ids = eval_task_ids if force_recompute else [
+			tid for tid in eval_task_ids if tid not in existing
+		]
+		if not missing_eval_ids:
+			print(f"	[resume] Checkpoint {label} already complete; skipping.")
+			continue
+		print(f"	[ckpt] Loading {ckpt_path.name}")
 		state = torch.load(ckpt_path, map_location=device)
 		model.load_state_dict(state)
-		row: dict[str, str] = {"checkpoint": label}
-		for eval_task_id in eval_task_ids:
+		for eval_task_id in missing_eval_ids:
 			fid = evaluate_fid(
 				model,
 				cl_test_loader[eval_task_id],
@@ -371,10 +530,14 @@ def build_checkpoint_rows(
 				seed=seed,
 				max_real=max_real,
 			)
-			row[f"task{eval_task_id}"] = f"{fid:.6f}"
+			existing[eval_task_id] = fid
 			print(f"      checkpoint {label} vs task {eval_task_id}: FID {fid:.3f}")
-		rows.append(row)
-	return rows
+		row_map[label] = existing
+		if label not in row_order:
+			row_order.append(label)
+		write_checkpoint_table(output_path, row_map, row_order, eval_task_ids)
+		updated = True
+	return updated
 
 
 def parse_task_checkpoint_manifest(manifest_path: Path) -> dict:
@@ -458,6 +621,13 @@ def evaluate_manifest_checkpoint_matrix(
 		if cli_args.per_checkpoint_output
 		else tables_dir / f"{label}.csv"
 	)
+	if cli_args.force_recompute:
+		per_task_fids: dict[int, dict[int, float]] = {}
+	else:
+		per_task_fids = read_task_matrix_csv(output_path)
+	max_eval_seen = max(
+		(max(results.keys()) if results else -1) for results in per_task_fids.values()
+	) if per_task_fids else -1
 
 	model = build_conditional_ddim(
 		in_channel=channels,
@@ -467,17 +637,26 @@ def evaluate_manifest_checkpoint_matrix(
 		gr_kl=0.0,
 	).to(device)
 
-	per_task_fids: dict[int, dict[int, float]] = {}
-	max_eval_seen = -1
+	updated_any = False
 	for task_id, ckpt_path in task_entries:
 		if not ckpt_path.is_file():
 			raise SystemExit(f"Checkpoint not found for task {task_id}: {ckpt_path}")
+		existing = {} if cli_args.force_recompute else dict(per_task_fids.get(task_id, {}))
+		eval_task_ids = build_eval_task_ids(task_id, len(cl_test_loader), cli_args.previous_only)
+		if task_id not in per_task_fids:
+			per_task_fids[task_id] = existing
+		missing_eval_ids = eval_task_ids if cli_args.force_recompute else [
+			tid for tid in eval_task_ids if tid not in existing
+		]
+		if not missing_eval_ids:
+			print(f"[resume] Task {task_id} already evaluated; skipping.")
+			if existing:
+				max_eval_seen = max(max_eval_seen, max(existing.keys()))
+			continue
 		print(f"[checkpoint] Task {task_id}: evaluating {ckpt_path}")
 		state = torch.load(ckpt_path, map_location=device)
 		model.load_state_dict(state)
-		eval_task_ids = build_eval_task_ids(task_id, len(cl_test_loader), cli_args.previous_only)
-		task_results: dict[int, float] = {}
-		for eval_task_id in eval_task_ids:
+		for eval_task_id in missing_eval_ids:
 			fid = evaluate_fid(
 				model,
 				cl_test_loader[eval_task_id],
@@ -486,35 +665,30 @@ def evaluate_manifest_checkpoint_matrix(
 				seed=cli_args.seed,
 				max_real=cli_args.max_real,
 			)
-			task_results[eval_task_id] = fid
-			print(f"    Task {task_id} vs Task {eval_task_id}: FID {fid:.3f}")
-		if task_results:
-			max_eval_seen = max(max_eval_seen, max(task_results.keys()))
-		per_task_fids[task_id] = task_results
+			existing[eval_task_id] = fid
+			print(f"	Task {task_id} vs Task {eval_task_id}: FID {fid:.3f}")
+		per_task_fids[task_id] = existing
+		if existing:
+			max_eval_seen = max(max_eval_seen, max(existing.keys()))
+		row_order = expected_task_ids if expected_task_ids else sorted(per_task_fids.keys())
+		max_expected = max(expected_task_ids) if expected_task_ids else -1
+		max_override = max(max_eval_seen, max_expected)
+		write_task_matrix_csv(
+			output_path,
+			per_task_fids,
+			column_prefix="task",
+			row_order=row_order,
+			max_eval_override=max_override if max_override >= 0 else None,
+		)
+		updated_any = True
 
 	if not per_task_fids:
 		print(f"No checkpoint rows were evaluated for manifest {manifest_path}; nothing to write.")
 		return
-
-	if expected_task_ids:
-		row_order = expected_task_ids
-		max_eval = max(expected_task_ids)
+	if updated_any:
+		print(f"Wrote checkpoint matrix: {output_path}")
 	else:
-		row_order = sorted(per_task_fids.keys())
-		max_eval = max_eval_seen if max_eval_seen >= 0 else max(row_order)
-
-	fieldnames = ["trained_task"] + [f"task{i}" for i in range(max_eval + 1)]
-	rows: list[dict[str, str]] = []
-	for task_id in row_order:
-		results = per_task_fids.get(task_id, {})
-		row: dict[str, str] = {"trained_task": task_id}
-		for eval_task in range(max_eval + 1):
-			val = results.get(eval_task)
-			row[f"task{eval_task}"] = f"{val:.6f}" if val is not None else ""
-		rows.append(row)
-
-	write_csv(output_path, fieldnames, rows)
-	print(f"Wrote checkpoint matrix: {output_path}")
+		print(f"Checkpoint matrix already complete: {output_path}")
 
 
 def main() -> None:
@@ -589,6 +763,8 @@ def main() -> None:
 					existing_row = next(reader, None)
 			except Exception as exc:
 				print(f"Warning: failed to parse existing CSV {output_path}: {exc}")
+		if cli_args.force_recompute:
+			existing_row = None
 		model = build_conditional_ddim(
 			in_channel=channels,
 			image_size=im_size,
@@ -700,43 +876,61 @@ def main() -> None:
 			gr_kl=0.0,
 		).to(device)
 
-		per_task_fids: dict[int, dict[int, float]] = {}
-		avg_by_task: dict[int, float] = {}
+		fid_csv = tables_dir / f"{run_name}_fid_by_task.csv"
+		if cli_args.force_recompute:
+			per_task_fids: dict[int, dict[int, float]] = {}
+		else:
+			per_task_fids = read_task_matrix_csv(fid_csv)
+		updated_any = False
 
 		for task_id, ckpt_path in task_ckpts:
-			print(f"  Loading checkpoint: {ckpt_path.name}")
-			state = torch.load(ckpt_path, map_location=device)
-			model.load_state_dict(state)
-
 			if cli_args.num_eval_tasks is not None:
 				eval_task_ids = fixed_eval_task_ids(cli_args.num_eval_tasks, len(cl_test_loader))
 			else:
 				eval_task_ids = build_eval_task_ids(
 					task_id, len(cl_test_loader), cli_args.previous_only
 				)
-			fids: list[float] = []
-			task_fids: dict[int, float] = {}
-			for eval_task_id in eval_task_ids:
-				fid = evaluate_fid(
-					model,
-					cl_test_loader[eval_task_id],
-					device,
-					num_inference_steps=cli_args.num_inference_steps,
-					seed=cli_args.seed,
-					max_real=cli_args.max_real,
+			existing_results = {} if cli_args.force_recompute else dict(per_task_fids.get(task_id, {}))
+			if task_id not in per_task_fids:
+				per_task_fids[task_id] = existing_results
+			missing_eval_ids = eval_task_ids if cli_args.force_recompute else [
+				tid for tid in eval_task_ids if tid not in existing_results
+			]
+			if missing_eval_ids:
+				print(f"	Loading checkpoint: {ckpt_path.name}")
+				state = torch.load(ckpt_path, map_location=device)
+				model.load_state_dict(state)
+				for eval_task_id in missing_eval_ids:
+					fid = evaluate_fid(
+						model,
+						cl_test_loader[eval_task_id],
+						device,
+						num_inference_steps=cli_args.num_inference_steps,
+						seed=cli_args.seed,
+						max_real=cli_args.max_real,
+					)
+					existing_results[eval_task_id] = fid
+					print(f"		Task {task_id} vs Task {eval_task_id}: FID {fid:.3f}")
+				per_task_fids[task_id] = existing_results
+				completed_vals = [existing_results[idx] for idx in existing_results]
+				if completed_vals:
+					avg_fid = float(sum(completed_vals) / len(completed_vals))
+					print(f"		Avg FID after task {task_id}: {avg_fid:.3f}")
+				write_task_matrix_csv(fid_csv, per_task_fids, column_prefix="")
+				updated_any = True
+			else:
+				print(
+					f"	[resume] Task {task_id} already has requested evaluation tasks; skipping re-run."
 				)
-				fids.append(fid)
-				task_fids[eval_task_id] = fid
-				print(f"    Task {task_id} vs Task {eval_task_id}: FID {fid:.3f}")
-
-			avg_fid = float(sum(fids) / max(len(fids), 1))
-			avg_by_task[task_id] = avg_fid
-			per_task_fids[task_id] = task_fids
-			print(f"    Avg FID after task {task_id}: {avg_fid:.3f}")
+				if existing_results:
+					completed_vals = [existing_results[idx] for idx in existing_results]
+					avg_fid = float(sum(completed_vals) / len(completed_vals))
+					print(f"		Avg FID after task {task_id}: {avg_fid:.3f}")
 
 			checkpoint_entries = list_task_checkpoint_series(run_dir, task_id)
 			if checkpoint_entries:
-				checkpoint_rows = build_checkpoint_rows(
+				checkpoint_csv = model_tables_dir / f"task{task_id}_checkpoint_fids.csv"
+				wrote_checkpoint = build_checkpoint_rows(
 					checkpoint_entries,
 					model,
 					cl_test_loader,
@@ -745,35 +939,30 @@ def main() -> None:
 					cli_args.num_inference_steps,
 					cli_args.seed,
 					cli_args.max_real,
+					checkpoint_csv,
+					cli_args.force_recompute,
 				)
-				checkpoint_fieldnames = ["checkpoint"] + [f"task{i}" for i in eval_task_ids]
-				checkpoint_csv = model_tables_dir / f"task{task_id}_checkpoint_fids.csv"
-				write_csv(checkpoint_csv, checkpoint_fieldnames, checkpoint_rows)
-				print(f"    Wrote checkpoint table: {checkpoint_csv}")
+				if wrote_checkpoint:
+					print(f"		Updated checkpoint table: {checkpoint_csv}")
+				else:
+					print(f"		Checkpoint table already complete: {checkpoint_csv}")
 			else:
-				print(f"    No intermediate checkpoints found for task {task_id}; skipping table.")
+				print(f"		No intermediate checkpoints found for task {task_id}; skipping table.")
 
-		fid_csv = tables_dir / f"{run_name}_fid_by_task.csv"
 		if per_task_fids:
-			max_eval = max((max(results.keys()) if results else -1 for results in per_task_fids.values()), default=-1)
-			if max_eval >= 0:
-				fieldnames = ["trained_task"] + [str(i) for i in range(max_eval + 1)]
-				matrix_rows: list[dict] = []
-				for trained_task in sorted(per_task_fids.keys()):
-					row: dict = {"trained_task": trained_task}
-					results = per_task_fids[trained_task]
-					for eval_task in range(max_eval + 1):
-						val = results.get(eval_task)
-						row[str(eval_task)] = f"{val:.6f}" if val is not None else ""
-					matrix_rows.append(row)
-				write_csv(fid_csv, fieldnames, matrix_rows)
+			write_task_matrix_csv(fid_csv, per_task_fids, column_prefix="")
+			if updated_any:
 				print(f"Wrote task x task matrix: {fid_csv}")
 			else:
-				write_csv(fid_csv, ["trained_task"], [])
-				print(f"No evaluation tasks found for {run_name}; wrote empty matrix")
+				print(f"Task matrix already up to date: {fid_csv}")
 		else:
-			write_csv(fid_csv, ["trained_task"], [])
-			print(f"No checkpoints evaluated for {run_name}; wrote empty matrix")
+			write_task_matrix_csv(fid_csv, {}, column_prefix="")
+			print(f"No checkpoints evaluated for {run_name}; wrote empty matrix: {fid_csv}")
+
+		avg_by_task: dict[int, float] = {}
+		for task_id, results in per_task_fids.items():
+			if results:
+				avg_by_task[task_id] = float(sum(results.values()) / len(results))
 
 		summary_entries.append((run_name, avg_by_task))
 

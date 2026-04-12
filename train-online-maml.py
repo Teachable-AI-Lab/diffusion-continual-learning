@@ -43,12 +43,12 @@ def set_seed(seed: int) -> None:
 def evaluate_seen_tasks(
     model: torch.nn.Module,
     test_loaders: Dict[int, torch.utils.data.DataLoader],
-    upto_task: int,
+    seen_task_ids: Sequence[int],
     fid_evaluator: utils.FIDEvaluator,
     num_inference_steps: int,
 ) -> Dict[int, float]:
     scores: Dict[int, float] = {}
-    for eval_task in range(upto_task + 1):
+    for eval_task in seen_task_ids:
         loader = test_loaders[eval_task]
         fid = fid_evaluator.fid_loader_vs_model(
             loader,
@@ -170,8 +170,15 @@ def main() -> None:
     gr: GenerativeReplay | None = None
     meta_ckpt_dir = run_dir / "meta_updates"
 
-    for task_id in sorted(cl_train_loaders.keys()):
-        print(f"=== Task {task_id} / {len(cl_train_loaders)} ===")
+    all_task_ids = sorted(cl_train_loaders.keys())
+    shuffled_task_ids = all_task_ids.copy()
+    if getattr(args, "randomize_task_order", False):
+        random.shuffle(shuffled_task_ids)
+        print("Randomized task order is enabled.")
+    print("Task order (train_step -> original_task):", shuffled_task_ids)
+
+    for train_step, task_id in enumerate(shuffled_task_ids):
+        print(f"=== Task {task_id} (train_step {train_step + 1}/{len(shuffled_task_ids)}) ===")
         outer_optimizer = optim.Adam(model.parameters(), lr=getattr(args, "lr", 2e-4))
         task_loader = cl_train_loaders[task_id]
         task_meta_losses: List[float] = []
@@ -257,11 +264,12 @@ def main() -> None:
         checkpoint_path = run_dir / f"task{task_id}_model.pt"
         torch.save(model.state_dict(), checkpoint_path)
 
+        seen_task_ids = shuffled_task_ids[: train_step + 1]
         fid_scores = evaluate_seen_tasks(
             model,
             cl_test_loaders,
-            task_id,
-            fid_evaluator,
+            seen_task_ids=seen_task_ids,
+            fid_evaluator=fid_evaluator,
             num_inference_steps=fid_steps,
         )
         avg_fid = float(np.mean(list(fid_scores.values())))
@@ -285,10 +293,16 @@ def main() -> None:
                 log_payload[f"fid/task_{eval_task}"] = fid
             wandb.log(log_payload)
 
-        last_task = task_id == max(cl_train_loaders.keys())
+        last_task = train_step == len(shuffled_task_ids) - 1
         if use_generative_replay and not last_task:
             frozen_teacher = utils.freeze_model(model)
-            old_classes = list(range((task_id + 1) * group_size))
+            old_classes = sorted(
+                {
+                    class_id
+                    for seen_task in seen_task_ids
+                    for class_id in range(seen_task * group_size, (seen_task + 1) * group_size)
+                }
+            )
             if gr is None:
                 gr = GenerativeReplay(
                     frozen_teacher,

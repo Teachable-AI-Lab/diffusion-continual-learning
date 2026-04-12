@@ -65,6 +65,8 @@ if args.use_wandb:
         # reinit=True
     )
     # print("Initialized wandb with project:", args.wandb_project)
+else:
+    wandb = None
 
 # Setup experiment
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -111,6 +113,16 @@ print("Starting training...")
 print("Continual learning on", len(cl_train_loader), "tasks.")
 all_task_ids = list(range(len(cl_train_loader)))
 
+# Optional task-order randomization (configured via JSON as `randomize_task_order`).
+shuffled_task_ids = all_task_ids.copy()
+if getattr(args, "randomize_task_order", False):
+    random.shuffle(shuffled_task_ids)
+    print("Randomized task order is enabled.")
+print("Task order (train_step -> original_task):", shuffled_task_ids)
+
+shuffled_cl_train_loader = {task_idx: cl_train_loader[task_idx] for task_idx in shuffled_task_ids}
+shuffled_cl_test_loader = {task_idx: cl_test_loader[task_idx] for task_idx in shuffled_task_ids}
+
 ewc = None
 gr = None
 kl = args.use_distillation
@@ -121,7 +133,7 @@ for task_id in all_task_ids:
     # if args.use_wandb:
         # wandb.log({"task_id": task_id})
     exp_path = args.wandb_run_name
-    train_loader = cl_train_loader[task_id]
+    train_loader = shuffled_cl_train_loader[task_id]
     utils.train_one_task(model, train_loader, task_id, optimizer, 
                      ewc, 
                      gr,
@@ -129,7 +141,7 @@ for task_id in all_task_ids:
                      args.epochs,
                      ROOT / exp_path,
                     #  None,
-                     device, True if args.use_wandb else None)
+                     device, wandb if args.use_wandb else None)
     # save model after each task
     model_path = ROOT / exp_path / f"model-task{task_id}.pt"
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,7 +150,7 @@ for task_id in all_task_ids:
     # test fid on each of previous tasks
     fids = []
     for eval_task_id in range(task_id + 1):
-        fid = evaluate_fid(model, cl_test_loader[eval_task_id], device)
+        fid = evaluate_fid(model, shuffled_cl_test_loader[eval_task_id], device)
         print(f"Task {task_id}, Task {eval_task_id}, FID: {fid:.2f}")
         fids.append(fid)
         # TODO: log to wandb
@@ -175,7 +187,7 @@ for task_id in all_task_ids:
                     model, train_loader, device=device, k=k_eigenpairs, max_samples=10000, power_iters=args.power_iters
                 )
             diag = None
-        elif args.ewc_fisher_type == "diag":
+        elif args.ewc_fisher_type == "diag" or args.ewc_fisher_type == "diag_sq":
             c, mu, diag = compute_rank1_coeff_and_mean(
                 model, train_loader, device=device, max_samples=10000
             )

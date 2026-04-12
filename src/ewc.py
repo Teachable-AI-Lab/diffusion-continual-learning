@@ -32,6 +32,9 @@ class EWC:
                 for mu_i, c_i in zip(mu, c):
                     proj = (mu_i.to(theta) * delta).sum()
                     total = total + 0.5 * float(c_i) * (proj * proj)
+            elif self.fisher_type == "diag_sq":
+                tmp = diag.to(theta) * delta
+                total = total + 0.5 * (tmp * tmp).sum()
             else:  # "rank1" | "rank1_opt"
                 proj = (mu.to(theta) * delta).sum()
                 if self.fisher_type == "rank1_opt" or self.fisher_type == "top_eig":

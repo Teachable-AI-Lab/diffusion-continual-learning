@@ -10,3 +10,8 @@ outputs/
 tables_and_figures/
 */__pycache__/
 */final_images*/
+*__pycache__/
+slurm*
+rebuttal_tables/
+imagenet_plots/
+scripts/

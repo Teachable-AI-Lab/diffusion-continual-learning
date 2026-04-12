@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional cap on real images per task.",
     )
-    parser.add_argument("--job-time", default="4:00:00", help="Walltime.")
+    parser.add_argument("--job-time", default="1:30:00", help="Walltime.")
     parser.add_argument("--memory-per-cpu", default="16G", help="Memory per CPU.")
     parser.add_argument("--gpus", default="l40s:1", help="GPU request string.")
     parser.add_argument("--account", default="gts-cmaclellan3", help="Slurm account.")
@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--venv-activate",
         type=Path,
-        default=Path("/storage/home/hcoda1/1/agupta886/scratch/python-envs/iclr-env/bin/activate"),
+        default=Path("/storage/home/hcoda1/1/agupta886/r-nisha3-0/iclr-env/bin/activate"),
         help="Path to virtualenv activate script.",
     )
     parser.add_argument(
@@ -176,7 +176,7 @@ def build_sbatch_body(
     max_real: int | None,
 ) -> str:
     cmd_lines = [
-        f"srun python {config.python_script} \\",
+        f"python {config.python_script} \\",
         f'''    --models_root "{models_root}" \\''',
         f'''    --tables_dir "{tables_dir}" \\''',
         f'''    --model-dirs "{run_dir}" \\''',
@@ -267,7 +267,7 @@ def main() -> None:
     else:
         if not models_root.exists():
             raise SystemExit(f"models_root not found: {models_root}")
-        run_dirs = sorted([p for p in models_root.iterdir() if p.is_dir()])
+        run_dirs = sorted([p for p in models_root.iterdir() if (p.is_dir() and 'vrmcl' in p.name.lower())])
     if not run_dirs:
         raise SystemExit("No model directories available to schedule. Check inputs.")
 
